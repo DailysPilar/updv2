@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Entornos virtuales
+venv/
+env/
+.env
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Archivos de configuración
+*.env
+*.log
+
+# IDEs y editores
+.vscode/
+.idea/
+*.sublime-workspace
+
+# Archivos de caché
+*.pyc
+*.pkl
+
+# Archivos de instalación
+*.egg
+*.whl
+
+# Otros
+*.DS_Store
+Thumbs.db
