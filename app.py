@@ -7,6 +7,7 @@ import PIL
 import settings
 import zipfile
 import io
+from torch.nn.functional import interpolate
 import csv
 from typing import List, Dict, Any
 from PIL import Image
@@ -16,6 +17,7 @@ from tqdm import tqdm
 from streamlit.components.v1 import html as html_component
 import torch  # Agregar esta importación
 from transformers import ViTForImageClassification, ViTImageProcessor
+import matplotlib.pyplot as plt
 
 # Constantes globales de la aplicación
 IOU_THRES = 0.5  # Umbral de IoU para la supresión de no máximos
@@ -23,17 +25,25 @@ CLASSES_NAME = ['both', 'infection', 'ischaemia', 'none']  # Nombres de clases e
 CLASSES_NAME_ES = ['INFECCIÓN E ISQUEMIA', 'INFECCIÓN', 'ISQUEMIA', 'SANO']  # Nombres de clases en español
 # Decorador para cachear el modelo de detección y evitar recargas innecesarias
 @st.cache_resource
-def load_det_model(model_path):
+def load_models():
     """
-    Carga el modelo de detección YOLO desde la ruta especificada.
-    
-    Args:
-        model_path: Ruta al archivo del modelo de detección
-        
-    Returns:
-        Modelo de detección YOLO cargado
+    Carga todos los modelos necesarios y los cachea para evitar recargas innecesarias.
     """
-    return load_pt_model(model_path)
+    try:
+        det_model = load_pt_model(Path(settings.DETECTION_MODEL))
+        model_path = 'weights/vit3con32'
+        processor = ViTImageProcessor.from_pretrained(model_path)
+        clf_model = ViTForImageClassification.from_pretrained(
+            model_path,
+            num_labels=len(CLASSES_NAME),
+            ignore_mismatched_sizes=True,
+            output_attentions=True
+        )
+        return det_model, processor, clf_model
+    except Exception as ex:
+        st.error("No se pudo cargar los modelos. Verifique las rutas especificadas")
+        st.error(ex)
+        return None, None, None
 
 def initialize_session() -> None:
     """
@@ -56,20 +66,34 @@ def initialize_session() -> None:
     if 'uploader_key' not in st.session_state:
         st.session_state.uploader_key = 0
 
+    # Modo de procesamiento (detección o clasificación directa)
+    if 'use_detection' not in st.session_state:
+        st.session_state.use_detection = True
+
+    # Inicializar el estado de show_attention si no existe
+    if 'show_attention' not in st.session_state:
+        st.session_state.show_attention = True
+
+    # Diccionario para almacenar los resultados de clasificación por imagen
+    if 'classification_cache' not in st.session_state:
+        st.session_state.classification_cache = {}
+
 def clear_session() -> None:
     """
     Limpia el estado de la sesión, eliminando las imágenes cargadas y procesadas.
-    Mantiene el estado del cargador de archivos y la confianza del modelo.
     """
-    # Eliminar las imágenes subidas
     if 'uploaded_images' in st.session_state:
         del st.session_state.uploaded_images
     
-    # Eliminar las imágenes procesadas
     if 'processed_images' in st.session_state:
         del st.session_state.processed_images
     
-    # Incrementar la clave del cargador para forzar su reinicialización
+    if 'classification_cache' in st.session_state:
+        del st.session_state.classification_cache
+    
+    # Resetear el estado del toggle de atención cuando se limpia la sesión
+    st.session_state.show_attention = True
+    
     st.session_state.uploader_key += 1
 
 def style_language_uploader():
@@ -163,14 +187,23 @@ def write_csv(processed_images: List[Dict[str, Any]], classes_name: List[str]) -
     # Crear un archivo CSV en memoria para almacenar las coordenadas
     csv_buffer = io.StringIO()
     csv_writer = csv.writer(csv_buffer)
-    # Escribir la cabecera del CSV
-    csv_writer.writerow(['filename', 'xmin', 'ymin', 'xmax', 'ymax', 'class'])
+    
+    # Escribir la cabecera del CSV según el modo
+    if st.session_state.use_detection:
+        csv_writer.writerow(['filename', 'xmin', 'ymin', 'xmax', 'ymax', 'class'])
+    else:
+        csv_writer.writerow(['filename', 'class'])
 
     for img in processed_images:
-        # Procesar cada caja delimitadora y escribir las coordenadas redondeadas
-        for box, clf in zip(img['boxes'], img['classes']):
-            xmin, ymin, xmax, ymax = [round(coord.item(), 2) for coord in box.xyxy[0]]
-            csv_writer.writerow([img['filename'], xmin, ymin, xmax, ymax, classes_name[clf]])
+        if st.session_state.use_detection:
+            # Modo detección: escribir coordenadas y clase para cada detección
+            for box, clf in zip(img['boxes'], img['classes']):
+                xmin, ymin, xmax, ymax = [round(coord.item(), 2) for coord in box.xyxy[0]]
+                csv_writer.writerow([img['filename'], xmin, ymin, xmax, ymax, classes_name[clf]])
+        else:
+            # Modo clasificación: escribir solo el nombre del archivo y la clase
+            class_idx = img['classes'][0]  # Tomar la primera clase ya que solo hay una
+            csv_writer.writerow([img['filename'], classes_name[class_idx]])
 
     # Devolver el contenido del CSV como una cadena de texto
     return csv_buffer.getvalue()
@@ -196,64 +229,220 @@ def check_duplicates(uploaded_files: list):
 
     return duplicate_files
 
-# Importar las librerías necesarias para el modelo ViT
-from transformers import ViTForImageClassification, ViTImageProcessor
-
-# Cargar el modelo y el procesador
-model_path = 'weights/vit3con32'
-processor = ViTImageProcessor.from_pretrained(model_path)
-clf_model = ViTForImageClassification.from_pretrained(
-    model_path,
-    num_labels=len(CLASSES_NAME),
-    ignore_mismatched_sizes=True
-)
-
-def process_images(det_model, clf_model, confidence: float, iou_thres: float, classes_name: List[str]) -> None:
+def process_images(det_model, clf_model, processor, confidence: float, iou_thres: float, classes_name: List[str]) -> None:
     """
-    Procesa las imágenes usando los modelos de detección y clasificación.
+    Procesa las imágenes usando los modelos de detección y clasificación de manera más eficiente.
     """
+    # Limpiar el estado antes de procesar nuevas imágenes
+    st.session_state.processed_images = []
+    st.session_state.show_attention = True
+    
+    target_size = (224, 224)
+    processed_results = []  # Lista temporal para almacenar resultados
+    
     for image in st.session_state.uploaded_images:
-        # Abrir la imagen
-        uploaded_image = PIL.Image.open(image)
+        image_name = image.name
         
-        # Detectar úlceras en la imagen
-        det_res = det_model.predict(uploaded_image, conf=confidence, iou=iou_thres)
-        bboxes = det_res[0].boxes
-
-        # Clasificar cada detección
-        classes = []
-        cropped_images = crop_images(uploaded_image, bboxes)
-        clf_model.eval()
-        
-        detections = []
-        
-        with torch.no_grad():
-            for cropped_image in cropped_images:
-                # Redimensionar la imagen
-                resized_image = cropped_image.resize((224, 224))
-                
-                # Preprocesar la imagen
-                inputs = processor(images=resized_image, return_tensors="pt")
-                
-                # Realizar la predicción
+        # Verificar si ya tenemos los resultados de clasificación en caché
+        if image_name in st.session_state.classification_cache:
+            cached_results = st.session_state.classification_cache[image_name]
+            
+            if st.session_state.use_detection:
+                # Si estamos en modo detección, usar los resultados de detección
+                detections = cached_results['detections']
+                bboxes = cached_results['boxes']
+                classes = cached_results['classes']
+            else:
+                # Si estamos en modo clasificación directa, usar la clasificación de la imagen completa
+                detections = [cached_results['full_image_classification']]
+                bboxes = []
+                classes = [cached_results['full_image_class']]
+        else:
+            # Si no hay resultados en caché, procesar la imagen
+            uploaded_image = PIL.Image.open(image)
+            
+            # Realizar la clasificación de la imagen completa primero
+            with torch.no_grad():
+                resized_image = uploaded_image.resize(target_size)
+                inputs = processor(images=[resized_image], return_tensors="pt")
                 outputs = clf_model(**inputs)
-                logits = outputs.logits
-                predicted_class_idx = logits.argmax(-1).item()
-                classes.append(predicted_class_idx)
+                full_image_class = outputs.logits.argmax(-1).item()
                 
-                detections.append({
-                    'image': cropped_image,
-                    'class': CLASSES_NAME_ES[predicted_class_idx]
-                })
-
-        # Almacenar los resultados
-        st.session_state.processed_images.append({
-            'image': uploaded_image,
-            'filename': image.name,
+                # Procesar atenciones para la imagen completa
+                attentions = outputs.attentions[-1][0]
+                full_image_attention = process_attention_maps(attentions, uploaded_image)
+                
+                full_image_detection = {
+                    'original_image': uploaded_image,
+                    'attention_map': full_image_attention,
+                    'class': CLASSES_NAME_ES[full_image_class]
+                }
+            
+            if st.session_state.use_detection:
+                # Modo con detección
+                det_res = det_model.predict(uploaded_image, conf=confidence, iou=iou_thres)
+                bboxes = det_res[0].boxes
+                cropped_images = crop_images(uploaded_image, bboxes)
+                
+                # Clasificar cada detección
+                detections = []
+                classes = []
+                
+                with torch.no_grad():
+                    for cropped_image in cropped_images:
+                        resized_crop = cropped_image.resize(target_size)
+                        inputs = processor(images=[resized_crop], return_tensors="pt")
+                        outputs = clf_model(**inputs)
+                        class_idx = outputs.logits.argmax(-1).item()
+                        classes.append(class_idx)
+                        
+                        # Procesar atenciones para la detección
+                        attentions = outputs.attentions[-1][0]
+                        attention_map = process_attention_maps(attentions, cropped_image)
+                        
+                        detections.append({
+                            'original_image': cropped_image,
+                            'attention_map': attention_map,
+                            'class': CLASSES_NAME_ES[class_idx]
+                        })
+            else:
+                # Modo sin detección
+                detections = [full_image_detection]
+                bboxes = []
+                classes = [full_image_class]
+            
+            # Guardar resultados en caché
+            st.session_state.classification_cache[image_name] = {
+                'full_image_classification': full_image_detection,
+                'full_image_class': full_image_class,
+                'detections': detections,
+                'boxes': bboxes,
+                'classes': classes
+            }
+        
+        # Almacenar los resultados en la lista temporal
+        processed_results.append({
+            'image': PIL.Image.open(image),
+            'filename': image_name,
             'boxes': bboxes,
             'classes': classes,
             'detections': detections
         })
+    
+    # Actualizar el estado de la sesión con todos los resultados procesados
+    st.session_state.processed_images = processed_results
+
+def process_attention_maps(attentions, image):
+    """
+    Procesa los mapas de atención de manera eficiente.
+    """
+    attention_maps_interpolated = []
+    
+    # Calcular importancia de cabezas y obtener las 3 principales
+    cls_attention = attentions[:, 0, 1:]
+    head_importance = cls_attention.mean(dim=1)
+    top_heads = torch.argsort(head_importance, descending=True)[:3]
+    
+    # Normalizar los pesos de las cabezas
+    head_weights = head_importance[top_heads]
+    head_weights = head_weights / head_weights.sum()
+
+    # Procesar cada una de las 3 cabezas principales
+    for head_idx, weight in zip(top_heads, head_weights):
+        attention = attentions[head_idx][0, 1:]
+        grid_size = int(np.sqrt(attention.shape[0]))
+        attention = attention.reshape(grid_size, grid_size)
+        
+        # Redimensionar el mapa de atención
+        attention = interpolate(
+            attention.unsqueeze(0).unsqueeze(0),
+            size=image.size[::-1],
+            mode="bicubic",
+            align_corners=False
+        ).squeeze()
+        
+        # Normalizar y aplicar umbral
+        attention = (attention - attention.min()) / (attention.max() - attention.min() + 1e-8)
+        threshold = torch.quantile(attention, 0.7)
+        attention_binary = (attention > threshold).float() * weight.item()
+        
+        attention_maps_interpolated.append(attention_binary.numpy())
+
+    # Crear mapa combinado ponderado
+    combined_attention = np.sum(attention_maps_interpolated, axis=0) if attention_maps_interpolated else np.zeros(image.size[::-1])
+    return np.clip(combined_attention, 0, 1)
+
+def compute_head_importance(images):
+    num_heads = clf_model.config.num_attention_heads
+    importance = {cls: np.zeros(num_heads) for cls in CLASSES_NAME}
+    counts = {cls: 0 for cls in CLASSES_NAME}
+    
+    for image in images:
+        # Obtener la predicción del modelo
+        with torch.no_grad():
+            inputs = processor(images=Image.fromarray(image), return_tensors="pt")
+            outputs = clf_model(**inputs)
+            predicted_class_idx = outputs.logits.argmax(-1).item()
+            predicted_class = CLASSES_NAME[predicted_class_idx]
+            
+            counts[predicted_class] += 1
+            
+            # Atención de la última capa
+            attentions = outputs.attentions[-1][0]  # [num_heads, seq_len, seq_len]
+            cls_attention = attentions[:, 0, 1:]    # [num_heads, num_patches]
+            
+            importance[predicted_class] += cls_attention.mean(dim=1).numpy()
+    
+    # Normalizar
+    for cls in CLASSES_NAME:
+        if counts[cls] > 0:
+            importance[cls] /= counts[cls]
+    
+    return importance
+
+def get_attention_map(image, model, processor, head_idx=None, layer_idx=-1, aggregate_layers=False):
+    pil_image = Image.fromarray(image)
+    inputs = processor(images=pil_image, return_tensors="pt")
+    
+    with torch.no_grad():
+        outputs = model(**inputs)
+    
+    if aggregate_layers:
+        # Promedio ponderado de todas las capas
+        attention_maps = []
+        weights = torch.linspace(0.5, 1.0, len(outputs.attentions))
+        for layer_weight, layer_attention in zip(weights, outputs.attentions):
+            attention = layer_attention[0]
+            if head_idx is not None:
+                attention = attention[head_idx][0, 1:]
+            else:
+                attention = attention.mean(dim=0)[0, 1:]
+            
+            grid_size = int(np.sqrt(attention.shape[0]))
+            attention = attention.reshape(grid_size, grid_size)
+            attention_maps.append(attention * layer_weight)
+        
+        attention = torch.stack(attention_maps).mean(dim=0)
+    else:
+        # Comportamiento con una sola capa
+        attentions = outputs.attentions[layer_idx][0]
+        if head_idx is not None:
+            attention = attentions[head_idx][0, 1:]
+        else:
+            attention = attentions.mean(dim=0)[0, 1:]
+        
+        grid_size = int(np.sqrt(attention.shape[0]))
+        attention = attention.reshape(grid_size, grid_size)
+    
+    # Redimensionar y normalizar el mapa de atención
+    attention = interpolate(
+        attention.unsqueeze(0).unsqueeze(0),
+        size=image.shape[:2],
+        mode="bicubic",
+        align_corners=False
+    ).squeeze().numpy()
+    
+    return np.clip((attention - attention.min()) / (attention.max() - attention.min() + 1e-8), 0, 1)
 
 def export_results(processed_images: List[Dict[str, Any]]) -> None:
     """
@@ -267,13 +456,34 @@ def export_results(processed_images: List[Dict[str, Any]]) -> None:
     with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
         # Agregar cada imagen procesada al ZIP
         for processed in processed_images:
-            # Convertir la imagen PIL a bytes
-            img_buffer = io.BytesIO()
-            processed['image'].save(img_buffer, format='JPEG')
-            img_buffer.seek(0)
+            # Crear figura con matplotlib para la visualización
+            fig, ax = plt.subplots(1, 1, figsize=(10, 10))
             
-            # Guardar en el ZIP
-            zip_file.writestr(processed['filename'], img_buffer.getvalue())
+            # Mostrar la imagen original
+            img_array = np.array(processed['image'])
+            ax.imshow(img_array)
+            
+            # Superponer el mapa de atención
+            if not st.session_state.use_detection or st.session_state.show_attention:
+                for detection in processed['detections']:
+                    mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
+                    ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
+            
+            ax.axis('off')
+            plt.tight_layout(pad=0)
+            
+            # Convertir la figura a bytes
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
+            plt.close(fig)
+            buf.seek(0)
+            
+            # Guardar en el ZIP con un nombre descriptivo
+            filename = processed['filename']
+            base_name = Path(filename).stem
+            extension = Path(filename).suffix
+            output_name = f"{base_name}_processed{extension}"
+            zip_file.writestr(output_name, buf.getvalue())
 
         # Agregar el archivo CSV con las anotaciones
         zip_file.writestr('anotaciones.csv', write_csv(processed_images, CLASSES_NAME))
@@ -313,12 +523,38 @@ def image_to_base64(image_path):
         st.error(f"No se encontró la imagen en: {image_path}")
         return ""
 
+def create_visualization(detection, show_attention):
+    """
+    Crea la visualización de manera más eficiente usando matplotlib.
+    """
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+    
+    # Mostrar la imagen original
+    img_array = np.array(detection['original_image'])
+    ax.imshow(img_array)
+    
+    # Superponer el mapa de atención si es necesario
+    if show_attention:
+        mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
+        ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
+    
+    ax.axis('off')
+    plt.tight_layout(pad=0)
+    
+    # Convertir la figura a imagen PIL de manera más eficiente
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
+    plt.close(fig)
+    buf.seek(0)
+    
+    return PIL.Image.open(buf)
+
 def main():
     """
     Función principal que ejecuta la aplicación Streamlit.
     Configura la interfaz y maneja la lógica principal de la aplicación.
     """
-    # Configuración de la página
+    # Configuración de la página - DEBE ser el primer comando de Streamlit
     image_path = Path(__file__).parent / "huellas-humanas.png"
     st.set_page_config(
         page_title="UPD - Úlceras de Pie Diabético",
@@ -327,50 +563,140 @@ def main():
         initial_sidebar_state="expanded"
     )
     
+    # Inicializar el estado de la sesión y variables - MOVIDO AQUÍ
+    initialize_session()
+    source_imgs = []
+    
+    # Cargar los modelos
+    try:
+        det_model, processor, clf_model = load_models()
+    except Exception as ex:
+        st.error("No se pudo cargar los modelos. Verifique las rutas especificadas")
+        st.error(ex)
+        return
+    
     # Mostrar logo y título
     try:
         base64_logo = image_to_base64(image_path)
-        st.markdown(
-            f"""
-        <style>
-        .logo-title {{
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }}
-        /* Eliminar padding del encabezado de la barra lateral */
-        .st-emotion-cache-16idsys p {{
-            padding-top: 0;
-            padding-bottom: 0;
-            margin: 0;
-        }}
-        /* Ajustar padding del contenedor principal */
-        .block-container..st-emotion-cache-1jicfl2 {{
-            padding: 2rem 1rem 10rem 5rem 5rem;
-        }}
-        .st-emotion-cache-kgpedg {{
-            padding: 0 !important;
-        }}
-        </style>
         
-        <div class="logo-title">
-            <img src="data:image/png;base64,{base64_logo}" width="80">
-            <h2>Cuidado inteligente del pie diabético</h2>
-        </div>
-        <br>
-            """,unsafe_allow_html=True
-        )
+        # Crear dos columnas para el logo y el toggle
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            st.markdown(
+                f"""
+            <style>
+            .logo-title {{
+                display: flex;
+                align-items: center;
+                gap: 15px;
+            }}
+            /* Eliminar padding del encabezado de la barra lateral */
+            .st-emotion-cache-16idsys p {{
+                padding-top: 0;
+                padding-bottom: 0;
+                margin: 0;
+            }}
+            /* Ajustar padding del contenedor principal */
+            div[data-testid="stMainBlockContainer"] {{
+                padding: 4rem 1rem 10rem 3rem 3rem;
+            }}
+            .st-emotion-cache-1jicfl2 {{
+                padding-left: 3rem;
+                padding-right: 3rem;
+            }}
+            .st-emotion-cache-kgpedg {{
+                padding: 0 !important;
+            }}
+            </style>
+            
+            <div class="logo-title">
+                <img src="data:image/png;base64,{base64_logo}" width="80">
+                <h2>Cuidado inteligente del pie diabético</h2>
+            </div>
+            <br>
+                """,unsafe_allow_html=True
+            )
     except Exception as e:
         st.error(f"Error al cargar la imagen: {e}")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown("<h2>Cuidado inteligente del pie diabético</h2>", unsafe_allow_html=True)
     
-    # Inicializar el estado de la sesión y variables
-    initialize_session()
-    source_imgs = []  # Lista para almacenar las imágenes subidas
-
+    # Mostrar toggle de atención solo si hay imágenes procesadas y el detector está activado
+    with col2:
+        # El toggle solo debe aparecer si el detector está activado Y hay imágenes procesadas
+        if st.session_state.use_detection and len(st.session_state.processed_images)>=1:
+            st.markdown("""
+                <style>
+                    .st-emotion-cache-1mo46gi {
+                        display: flex !important;
+                        justify-content: flex-end !important;
+                        align-items: center !important;
+                        width: 100% !important;
+                        padding: 0 !important;
+                        margin: 0 !important;
+                    }
+                    .st-emotion-cache-4mtp6l {
+                        margin: 0 !important;
+                        width: fit-content !important;
+                        display: flex !important;
+                        justify-content: flex-end !important;
+                        align-items: center !important;
+                    }
+                    .edwcd611 {
+                        margin: 0 !important;
+                        width: fit-content !important;
+                    }
+                </style>
+            """, unsafe_allow_html=True)
+            
+            show_attention = st.toggle(
+                "Mostrar áreas de atención",
+                value=st.session_state.show_attention,
+                help="Activa/Desactiva la visualización de las áreas críticas",
+                key="show_attention_toggle"
+            )
+            st.session_state.show_attention = show_attention
+        else:
+            # Deshabilitar el toggle de atención cuando no se cumplan las condiciones
+            if "show_attention_toggle" in st.session_state:
+                del st.session_state["show_attention_toggle"]
+            st.session_state.show_attention = False
+    
     # Configuración del sidebar
     with st.sidebar:
         # Título de la barra lateral
         st.header("⚙️ Configuración del modelo")
+
+        # Toggle para elegir el modo de procesamiento
+        use_detection = st.toggle(
+            "Usar modelo de detección",
+            value=st.session_state.use_detection,
+            help="Activa/Desactiva el uso del modelo de detección.",
+            key="detection_toggle",
+            on_change=lambda: update_detection_mode()
+        )
+        
+        # Actualizar el estado si cambió el toggle
+        if use_detection != st.session_state.use_detection:
+            st.session_state.use_detection = use_detection
+            # Actualizar la visualización de las imágenes procesadas si existen
+            if 'processed_images' in st.session_state and len(st.session_state.processed_images) > 0:
+                for processed in st.session_state.processed_images:
+                    image_name = processed['filename']
+                    if image_name in st.session_state.classification_cache:
+                        cached_results = st.session_state.classification_cache[image_name]
+                        if st.session_state.use_detection:
+                            # Si estamos en modo detección, usar los resultados de detección
+                            processed['detections'] = cached_results['detections']
+                            processed['boxes'] = cached_results['boxes']
+                            processed['classes'] = cached_results['classes']
+                        else:
+                            # Si estamos en modo clasificación directa, usar la clasificación de la imagen completa
+                            processed['detections'] = [cached_results['full_image_classification']]
+                            processed['boxes'] = []
+                            processed['classes'] = [cached_results['full_image_class']]
 
         # Control deslizante para ajustar la confianza del modelo
         confidence = st.slider( 
@@ -378,13 +704,16 @@ def main():
             min_value=0,
             max_value=100, 
             value=st.session_state.confidence,
-            help='Probabilidad de certeza en la detección de la úlcera'
+            help='Probabilidad de certeza en la detección de la úlcera',
+            disabled=not st.session_state.use_detection
         )
 
-        # Actualizar la confianza si ha cambiado
-        if confidence != st.session_state.confidence:
+        # Actualizar la confianza solo si está en modo detección
+        if confidence != st.session_state.confidence and st.session_state.use_detection:
             st.session_state.confidence = confidence
             clear_session()
+
+        
 
         # Contenedor para el cargador de archivos
         uploader_container = st.container()
@@ -459,20 +788,6 @@ def main():
                 unsafe_allow_html=True
             )
 
-    # Cargar los modelos globalmente
-    try:
-        det_model = load_det_model(Path(settings.DETECTION_MODEL))
-        model_path = 'weights/vit3con32'
-        processor = ViTImageProcessor.from_pretrained(model_path)
-        clf_model = ViTForImageClassification.from_pretrained(
-            model_path,
-            num_labels=len(CLASSES_NAME),
-            ignore_mismatched_sizes=True
-        )
-    except Exception as ex:
-        st.error("No se pudo cargar el modelo. Verifique la ruta especificada")
-        st.error(ex)
-
     # Procesar y mostrar las imágenes
     if source_imgs and len(source_imgs) != 0:
         st.session_state.uploaded_images = source_imgs
@@ -480,7 +795,11 @@ def main():
         # Selector de imagen para visualización
         if len(st.session_state.uploaded_images) > 1:
             image_filenames = [img.name for img in st.session_state.uploaded_images]
-            selected_image = st.selectbox("Selecciona la imagen que desea visualizar:", image_filenames)
+            selected_image = st.selectbox(
+                "",
+                image_filenames,
+                help="Selecciona la imagen que desea visualizar"
+            )
             original_image_index = image_filenames.index(selected_image)
             source_img = source_imgs[original_image_index]
         else:
@@ -491,25 +810,44 @@ def main():
         col1, col2 = st.columns([1,1], gap="medium")
         with col1:
             try:
-                st.markdown("### Imagen Original")
-                with st.container(border=True):
+                st.markdown("""
+                    <div style='text-align: center; font-size: 1.5em;'>
+                        📸 Imagen Original
+                    </div>
+                """, unsafe_allow_html=True)
+                with st.container():
                     st.markdown("""
                         <style>
                             .stImage img {
                                 max-height: 400px !important;
                                 height: auto !important;
-                                width: 100% !important;
+                                max-width: 400px !important;
                                 object-fit: contain !important;
+                                overflow: hidden;
+                                margin: 0 auto !important;
+                                display: block !important;
                             }
                             .st-emotion-cache-1kyxreq {
                                 width: 100% !important;
                                 margin: 0 !important;
                                 padding: 0 !important;
+                                display: flex !important;
+                                justify-content: center !important;
+                                align-items: center !important;
                             }
                             .st-emotion-cache-1v0mbdj {
                                 width: 100% !important;
                                 margin: 0 !important;
                                 padding: 0 !important;
+                                display: flex !important;
+                                justify-content: center !important;
+                                align-items: center !important;
+                            }
+                            div[data-testid="stImage"] {
+                                display: flex !important;
+                                justify-content: center !important;
+                                align-items: center !important;
+                                width: 100% !important;
                             }
                         </style>
                     """, unsafe_allow_html=True)
@@ -527,29 +865,65 @@ def main():
                 st.rerun()
 
             if process_image_button:
-                st.session_state.processed_images = []
+                # Procesar las imágenes primero
                 process_images(
                     det_model=det_model,
                     clf_model=clf_model,
+                    processor=processor,
                     confidence=st.session_state.confidence/100,
                     iou_thres=IOU_THRES,
                     classes_name=CLASSES_NAME_ES
                 )
+                # Forzar una actualización de la interfaz
+                #st.rerun()
 
             # Mostrar imágenes procesadas
             if st.session_state.processed_images:
                 for processed in st.session_state.processed_images:
                     if processed['filename'] == selected_image:
                         if len(processed['detections']) > 0:
-                            st.markdown("### Úlceras Detectadas")
+                            # Determinar el título y el estilo según el modo
+                            if st.session_state.use_detection:
+                                title = "🔍 Úlceras Detectadas"
+                            else:
+                                title = "🔍 Clasificación de la Imagen"
                             
-                            # Contenedor con borde para las detecciones
-                            with st.container(border=True):
+                            st.markdown(f"""
+                                <div style='text-align: center; font-size: 1.5em; margin-bottom: 0.5rem;'>
+                                    {title}
+                                </div>
+                            """, unsafe_allow_html=True)
+                            
+                            with st.container():
                                 # Mostrar cada detección verticalmente
                                 for idx, detection in enumerate(processed['detections']):
+                                    # Crear figura con matplotlib para la visualización
+                                    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+                                    
+                                    # Mostrar la imagen original
+                                    img_array = np.array(detection['original_image'])
+                                    ax.imshow(img_array)
+                                    
+                                    # Superponer el mapa de atención
+                                    # Si el modelo de detección está desactivado, siempre mostrar atención
+                                    # Si está activado, respetar el toggle
+                                    if not st.session_state.use_detection or st.session_state.show_attention:
+                                        mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
+                                        ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
+                                    
+                                    ax.axis('off')
+                                    plt.tight_layout(pad=0)  # Eliminar el padding
+                                    
+                                    # Convertir la figura a imagen PIL
+                                    buf = io.BytesIO()
+                                    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)  # Eliminar el padding al guardar
+                                    plt.close(fig)
+                                    buf.seek(0)
+                                    display_image = PIL.Image.open(buf)
+                                    
                                     # Contenedor para la imagen
                                     st.image(
-                                        detection['image'],
+                                        display_image,
                                         use_column_width=True
                                     )
                                     
@@ -565,23 +939,105 @@ def main():
                                             margin: 5px auto 15px auto;
                                             font-weight: 600;
                                             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                                            width: 100%;
+                                            width: 80%;
                                             box-sizing: border-box;
                                         ">
-                                            Detección #{idx + 1}: {detection['class']}
+                                            {f'Detección {idx + 1}: ' if st.session_state.use_detection else ''}{detection['class']}
                                         </div>
                                         """,
                                         unsafe_allow_html=True
                                     )
                         else:
-                            st.info('No se han detectado ulceraciones', icon="ℹ️")
+                            st.markdown("""
+                                <div style="
+                                    background-color: transparent;
+                                    padding: 2rem;
+                                    text-align: center;
+                                    margin: 1rem 0;
+                                ">
+                                    <div style="
+                                        width: 100px;
+                                        height: 100px;
+                                        background-color: #00C853;
+                                        border-radius: 50%;
+                                        display: flex;
+                                        align-items: center;
+                                        justify-content: center;
+                                        margin: 3rem auto 1rem auto;
+                                        box-shadow: 0 4px 8px rgba(0,200,83,0.3);
+                                    ">
+                                        <div style="
+                                            font-size: 4rem;
+                                            color: white;
+                                            transform: scale(1.2);
+                                        ">
+                                            ✓
+                                        </div>
+                                    </div>
+                                    <div style="
+                                        font-size: 1.2rem;
+                                        color: var(--text-color);
+                                        font-weight: 800;
+                                    ">
+                                        No se han detectado ulceraciones
+                                    </div>
+                                    <div style="
+                                        font-size: 0.9rem;
+                                        color: var(--text-color);
+                                        margin-top: 0.5rem;
+                                        opacity: 0.8;
+                                    ">
+                                        La imagen analizada no presenta signos de úlceras
+                                    </div>
+                                </div>
+                                <style>
+                                    :root {
+                                        --text-color: var(--text-color);
+                                    }
+                                    @media (prefers-color-scheme: dark) {
+                                        :root {
+                                            --text-color: #FFFFFF;
+                                        }
+                                    }
+                                    @media (prefers-color-scheme: light) {
+                                        :root {
+                                            --text-color: #000000;
+                                        }
+                                    }
+                                </style>
+                            """, unsafe_allow_html=True)
 
-            # Mostrar botón de exportación si hay detecciones
+            # Mostrar botón de exportación si hay imágenes procesadas
             if st.session_state.processed_images and len(st.session_state.processed_images) == len(st.session_state.uploaded_images):
-                if any(len(p['boxes']) > 0 for p in st.session_state.processed_images):
-                    export_results(st.session_state.processed_images)
+                # Mostrar el botón de exportación en ambos modos
+                export_results(st.session_state.processed_images)
+
+def update_detection_mode():
+    """
+    Actualiza el modo de detección y la visualización de las imágenes procesadas.
+    """
+    # Actualizar la visualización de las imágenes procesadas si existen
+    if 'processed_images' in st.session_state and len(st.session_state.processed_images) > 0:
+        for processed in st.session_state.processed_images:
+            image_name = processed['filename']
+            if image_name in st.session_state.classification_cache:
+                cached_results = st.session_state.classification_cache[image_name]
+                if st.session_state.use_detection:
+                    # Si estamos en modo detección, usar los resultados de detección
+                    processed['detections'] = cached_results['detections']
+                    processed['boxes'] = cached_results['boxes']
+                    processed['classes'] = cached_results['classes']
                 else:
-                    st.info('No se han detectado ulceraciones', icon="ℹ️")
+                    # Si estamos en modo clasificación directa, usar la clasificación de la imagen completa
+                    processed['detections'] = [cached_results['full_image_classification']]
+                    processed['boxes'] = []
+                    processed['classes'] = [cached_results['full_image_class']]
+    
+    # Actualizar el estado del toggle de atención
+    if not st.session_state.use_detection:
+        if "show_attention_toggle" in st.session_state:
+            del st.session_state["show_attention_toggle"]
+        st.session_state.show_attention = False
 
 if __name__ == '__main__':
     main()
