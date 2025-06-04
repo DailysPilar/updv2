@@ -15,12 +15,12 @@ Este proyecto utiliza modelos de inteligencia artificial para detectar y clasifi
   - [Licencia](#licencia)
 
 ## Descripción
-Este proyecto es un sistema de detección automática de úlceras del pie diabético (UPD) utilizando modelos de inteligencia artificial basados en _YOLOv8_ y _DenseNet201_. El sistema permite identificar y etiquetar úlceras en imágenes, ayudando a los profesionales de la salud a diagnosticar de manera más rápida y precisa.
+Este proyecto es un sistema de detección automática de úlceras del pie diabético (UPD) utilizando modelos de inteligencia artificial basados en _YOLOv8_ y _Vision_Transformer_ViT_. El sistema permite identificar y etiquetar úlceras en imágenes, ayudando a los profesionales de la salud a diagnosticar de manera más rápida y precisa.
 
 ## Instalación
 1. Clona el repositorio:
 ```bash
-git clone https://github.com/edgarmoya/dfu-app.git
+git clone https://github.com/DailysPilar/updv2.git
 ```
 2. Navega al directorio del proyecto:
 ```bash
