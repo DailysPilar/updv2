@@ -70,7 +70,7 @@ def initialize_session() -> None:
     if 'use_detection' not in st.session_state:
         st.session_state.use_detection = True
 
-    # Inicializar el estado de show_attention si no existe
+    # Control de visualización de atención (inicializado en True)
     if 'show_attention' not in st.session_state:
         st.session_state.show_attention = True
 
@@ -91,7 +91,7 @@ def clear_session() -> None:
     if 'classification_cache' in st.session_state:
         del st.session_state.classification_cache
     
-    # Resetear el estado del toggle de atención cuando se limpia la sesión
+    # Resetear el estado de atención cuando se limpia la sesión
     st.session_state.show_attention = True
     
     st.session_state.uploader_key += 1
@@ -181,8 +181,7 @@ def write_csv(processed_images: List[Dict[str, Any]], classes_name: List[str]) -
         classes_name (List[str]): Nombre perteneciente a cada clase. 
 
     Returns:
-        str: El contenido del archivo CSV como una cadena de texto, con el nombre del archivo, 
-        las coordenadas de las cajas delimitadoras (xmin, ymin, xmax, ymax) y la clase para cada objeto detectado.
+        str: El contenido del archivo CSV como una cadena de texto.
     """
     # Crear un archivo CSV en memoria para almacenar las coordenadas
     csv_buffer = io.StringIO()
@@ -202,8 +201,9 @@ def write_csv(processed_images: List[Dict[str, Any]], classes_name: List[str]) -
                 csv_writer.writerow([img['filename'], xmin, ymin, xmax, ymax, classes_name[clf]])
         else:
             # Modo clasificación: escribir solo el nombre del archivo y la clase
-            class_idx = img['classes'][0]  # Tomar la primera clase ya que solo hay una
-            csv_writer.writerow([img['filename'], classes_name[class_idx]])
+            # Obtener la clase directamente de la detección
+            class_name = img['detections'][0]['class']
+            csv_writer.writerow([img['filename'], class_name])
 
     # Devolver el contenido del CSV como una cadena de texto
     return csv_buffer.getvalue()
@@ -235,7 +235,10 @@ def process_images(det_model, clf_model, processor, confidence: float, iou_thres
     """
     # Limpiar el estado antes de procesar nuevas imágenes
     st.session_state.processed_images = []
-    st.session_state.show_attention = True
+    
+    # Asegurar que el estado de atención esté sincronizado con el modo de detección
+    if not st.session_state.use_detection:
+        st.session_state.show_attention = True
     
     target_size = (224, 224)
     processed_results = []  # Lista temporal para almacenar resultados
@@ -372,78 +375,6 @@ def process_attention_maps(attentions, image):
     combined_attention = np.sum(attention_maps_interpolated, axis=0) if attention_maps_interpolated else np.zeros(image.size[::-1])
     return np.clip(combined_attention, 0, 1)
 
-def compute_head_importance(images):
-    num_heads = clf_model.config.num_attention_heads
-    importance = {cls: np.zeros(num_heads) for cls in CLASSES_NAME}
-    counts = {cls: 0 for cls in CLASSES_NAME}
-    
-    for image in images:
-        # Obtener la predicción del modelo
-        with torch.no_grad():
-            inputs = processor(images=Image.fromarray(image), return_tensors="pt")
-            outputs = clf_model(**inputs)
-            predicted_class_idx = outputs.logits.argmax(-1).item()
-            predicted_class = CLASSES_NAME[predicted_class_idx]
-            
-            counts[predicted_class] += 1
-            
-            # Atención de la última capa
-            attentions = outputs.attentions[-1][0]  # [num_heads, seq_len, seq_len]
-            cls_attention = attentions[:, 0, 1:]    # [num_heads, num_patches]
-            
-            importance[predicted_class] += cls_attention.mean(dim=1).numpy()
-    
-    # Normalizar
-    for cls in CLASSES_NAME:
-        if counts[cls] > 0:
-            importance[cls] /= counts[cls]
-    
-    return importance
-
-def get_attention_map(image, model, processor, head_idx=None, layer_idx=-1, aggregate_layers=False):
-    pil_image = Image.fromarray(image)
-    inputs = processor(images=pil_image, return_tensors="pt")
-    
-    with torch.no_grad():
-        outputs = model(**inputs)
-    
-    if aggregate_layers:
-        # Promedio ponderado de todas las capas
-        attention_maps = []
-        weights = torch.linspace(0.5, 1.0, len(outputs.attentions))
-        for layer_weight, layer_attention in zip(weights, outputs.attentions):
-            attention = layer_attention[0]
-            if head_idx is not None:
-                attention = attention[head_idx][0, 1:]
-            else:
-                attention = attention.mean(dim=0)[0, 1:]
-            
-            grid_size = int(np.sqrt(attention.shape[0]))
-            attention = attention.reshape(grid_size, grid_size)
-            attention_maps.append(attention * layer_weight)
-        
-        attention = torch.stack(attention_maps).mean(dim=0)
-    else:
-        # Comportamiento con una sola capa
-        attentions = outputs.attentions[layer_idx][0]
-        if head_idx is not None:
-            attention = attentions[head_idx][0, 1:]
-        else:
-            attention = attentions.mean(dim=0)[0, 1:]
-        
-        grid_size = int(np.sqrt(attention.shape[0]))
-        attention = attention.reshape(grid_size, grid_size)
-    
-    # Redimensionar y normalizar el mapa de atención
-    attention = interpolate(
-        attention.unsqueeze(0).unsqueeze(0),
-        size=image.shape[:2],
-        mode="bicubic",
-        align_corners=False
-    ).squeeze().numpy()
-    
-    return np.clip((attention - attention.min()) / (attention.max() - attention.min() + 1e-8), 0, 1)
-
 def export_results(processed_images: List[Dict[str, Any]]) -> None:
     """
     Exporta las imágenes procesadas y sus anotaciones en un archivo ZIP.
@@ -464,10 +395,9 @@ def export_results(processed_images: List[Dict[str, Any]]) -> None:
             ax.imshow(img_array)
             
             # Superponer el mapa de atención
-            if not st.session_state.use_detection or st.session_state.show_attention:
-                for detection in processed['detections']:
-                    mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
-                    ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
+            for detection in processed['detections']:
+                mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
+                ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
             
             ax.axis('off')
             plt.tight_layout(pad=0)
@@ -523,7 +453,7 @@ def image_to_base64(image_path):
         st.error(f"No se encontró la imagen en: {image_path}")
         return ""
 
-def create_visualization(detection, show_attention):
+def create_visualization(detection):
     """
     Crea la visualización de manera más eficiente usando matplotlib.
     """
@@ -533,8 +463,8 @@ def create_visualization(detection, show_attention):
     img_array = np.array(detection['original_image'])
     ax.imshow(img_array)
     
-    # Superponer el mapa de atención si es necesario
-    if show_attention:
+    # Superponer el mapa de atención solo si show_attention es True y estamos en modo detección
+    if st.session_state.use_detection and st.session_state.show_attention:
         mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
         ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
     
@@ -563,7 +493,7 @@ def main():
         initial_sidebar_state="expanded"
     )
     
-    # Inicializar el estado de la sesión y variables - MOVIDO AQUÍ
+    # Inicializar el estado de la sesión y variables
     initialize_session()
     source_imgs = []
     
@@ -579,7 +509,7 @@ def main():
     try:
         base64_logo = image_to_base64(image_path)
         
-        # Crear dos columnas para el logo y el toggle
+        # Crear dos columnas para el logo y el título
         col1, col2 = st.columns([3, 1])
         
         with col1:
@@ -623,80 +553,57 @@ def main():
         with col1:
             st.markdown("<h2>Cuidado inteligente del pie diabético</h2>", unsafe_allow_html=True)
     
-    # Mostrar toggle de atención solo si hay imágenes procesadas y el detector está activado
-    with col2:
-        # El toggle solo debe aparecer si el detector está activado Y hay imágenes procesadas
-        if st.session_state.use_detection and len(st.session_state.processed_images)>=1:
-            st.markdown("""
-                <style>
-                    .st-emotion-cache-1mo46gi {
-                        display: flex !important;
-                        justify-content: flex-end !important;
-                        align-items: center !important;
-                        width: 100% !important;
-                        padding: 0 !important;
-                        margin: 0 !important;
-                    }
-                    .st-emotion-cache-4mtp6l {
-                        margin: 0 !important;
-                        width: fit-content !important;
-                        display: flex !important;
-                        justify-content: flex-end !important;
-                        align-items: center !important;
-                    }
-                    .edwcd611 {
-                        margin: 0 !important;
-                        width: fit-content !important;
-                    }
-                </style>
-            """, unsafe_allow_html=True)
-            
-            show_attention = st.toggle(
-                "Mostrar áreas de atención",
-                value=st.session_state.show_attention,
-                help="Activa/Desactiva la visualización de las áreas críticas",
-                key="show_attention_toggle"
-            )
-            st.session_state.show_attention = show_attention
-        else:
-            # Deshabilitar el toggle de atención cuando no se cumplan las condiciones
-            if "show_attention_toggle" in st.session_state:
-                del st.session_state["show_attention_toggle"]
-            st.session_state.show_attention = False
-    
     # Configuración del sidebar
     with st.sidebar:
         # Título de la barra lateral
         st.header("⚙️ Configuración del modelo")
 
+        # Agregar un callback para el toggle de detección
+        def on_detection_toggle():
+            """
+            Callback que se ejecuta cuando cambia el estado del toggle de detección
+            """
+            # Actualizar el estado de detección
+            st.session_state.use_detection = st.session_state.use_detection
+            
+            # Si se desactiva la detección, forzar show_attention a True
+            if not st.session_state.use_detection:
+                st.session_state.show_attention = True
+            
+            # Reprocesar las imágenes si hay alguna cargada
+            if 'uploaded_images' in st.session_state and st.session_state.uploaded_images:
+                process_images(det_model, clf_model, processor, st.session_state.confidence/100, IOU_THRES, CLASSES_NAME)
+
         # Toggle para elegir el modo de procesamiento
-        use_detection = st.toggle(
+        st.toggle(
             "Usar modelo de detección",
             value=st.session_state.use_detection,
-            help="Activa/Desactiva el uso del modelo de detección.",
-            key="detection_toggle",
-            on_change=lambda: update_detection_mode()
+            key="use_detection",
+            on_change=on_detection_toggle,
+            help="Activar/Desactivar modelo de detección de UPD"
         )
-        
-        # Actualizar el estado si cambió el toggle
-        if use_detection != st.session_state.use_detection:
-            st.session_state.use_detection = use_detection
-            # Actualizar la visualización de las imágenes procesadas si existen
-            if 'processed_images' in st.session_state and len(st.session_state.processed_images) > 0:
-                for processed in st.session_state.processed_images:
-                    image_name = processed['filename']
-                    if image_name in st.session_state.classification_cache:
-                        cached_results = st.session_state.classification_cache[image_name]
-                        if st.session_state.use_detection:
-                            # Si estamos en modo detección, usar los resultados de detección
-                            processed['detections'] = cached_results['detections']
-                            processed['boxes'] = cached_results['boxes']
-                            processed['classes'] = cached_results['classes']
-                        else:
-                            # Si estamos en modo clasificación directa, usar la clasificación de la imagen completa
-                            processed['detections'] = [cached_results['full_image_classification']]
-                            processed['boxes'] = []
-                            processed['classes'] = [cached_results['full_image_class']]
+
+        # Mostrar el toggle de atención solo si la detección está activada
+        if st.session_state.use_detection:
+            def on_attention_toggle():
+                """
+                Callback que se ejecuta cuando cambia el estado del toggle de atención
+                """
+                st.session_state.show_attention = st.session_state.show_attention
+                # Reprocesar las imágenes para actualizar la visualización
+                if 'uploaded_images' in st.session_state and st.session_state.uploaded_images:
+                    process_images(det_model, clf_model, processor, st.session_state.confidence/100, IOU_THRES, CLASSES_NAME)
+
+            st.toggle(
+                "Mostrar zonas de atención",
+                value=st.session_state.show_attention,
+                key="show_attention",
+                on_change=on_attention_toggle,
+                help="Activar/desactivar la visualización de las zonas de atención"
+            )
+        else:
+            # Si la detección está desactivada, forzar show_attention a True
+            st.session_state.show_attention = True
 
         # Control deslizante para ajustar la confianza del modelo
         confidence = st.slider( 
@@ -705,15 +612,14 @@ def main():
             max_value=100, 
             value=st.session_state.confidence,
             help='Probabilidad de certeza en la detección de la úlcera',
-            disabled=not st.session_state.use_detection
+            disabled=not st.session_state.use_detection,
+            key="confidence_slider"
         )
 
-        # Actualizar la confianza solo si está en modo detección
-        if confidence != st.session_state.confidence and st.session_state.use_detection:
+        # Actualizar la confianza solo si el slider está habilitado
+        if st.session_state.use_detection and confidence != st.session_state.confidence:
             st.session_state.confidence = confidence
             clear_session()
-
-        
 
         # Contenedor para el cargador de archivos
         uploader_container = st.container()
@@ -792,16 +698,45 @@ def main():
     if source_imgs and len(source_imgs) != 0:
         st.session_state.uploaded_images = source_imgs
 
+        # Lista de nombres de imágenes procesadas
+        processed_filenames = [img['filename'] for img in st.session_state.processed_images] if st.session_state.processed_images else []
+        uploaded_filenames = [img.name for img in st.session_state.uploaded_images]
+
+        # Verificar si hay nuevas imágenes que procesar
+        new_images = [name for name in uploaded_filenames if name not in processed_filenames]
+
         # Selector de imagen para visualización
         if len(st.session_state.uploaded_images) > 1:
             image_filenames = [img.name for img in st.session_state.uploaded_images]
+            
+            # Inicializar o actualizar el estado de la imagen seleccionada
+            if 'selected_image_name' not in st.session_state or st.session_state.selected_image_name not in image_filenames:
+                # Si hay nuevas imágenes, seleccionar la primera de ellas
+                if new_images:
+                    st.session_state.selected_image_name = new_images[0]
+                else:
+                    st.session_state.selected_image_name = image_filenames[0]
+
+            # Usar el estado de la sesión para mantener la selección
             selected_image = st.selectbox(
                 "",
                 image_filenames,
-                help="Selecciona la imagen que desea visualizar"
+                index=image_filenames.index(st.session_state.selected_image_name),
+                help="Selecciona la imagen que desea visualizar",
+                key="image_selector",
+                on_change=lambda: setattr(st.session_state, 'selected_image_name', st.session_state.image_selector)
             )
-            original_image_index = image_filenames.index(selected_image)
-            source_img = source_imgs[original_image_index]
+            
+            # Actualizar el estado con la imagen seleccionada
+            st.session_state.selected_image_name = selected_image
+            
+            # Encontrar la imagen correspondiente
+            for img in source_imgs:
+                if img.name == selected_image:
+                    source_img = img
+                    break
+            else:
+                source_img = source_imgs[0]  # Fallback a la primera imagen si no se encuentra
         else:
             selected_image = source_imgs[0].name
             source_img = source_imgs[0]
@@ -864,8 +799,15 @@ def main():
                 time.sleep(0.6)
                 st.rerun()
 
-            if process_image_button:
-                # Procesar las imágenes primero
+            # Lista de nombres de imágenes procesadas
+            processed_filenames = [img['filename'] for img in st.session_state.processed_images] if st.session_state.processed_images else []
+            uploaded_filenames = [img.name for img in st.session_state.uploaded_images]
+
+            # Verificar si hay nuevas imágenes que procesar
+            new_images = [name for name in uploaded_filenames if name not in processed_filenames]
+            
+            # Procesar automáticamente solo si hay imágenes procesadas previamente y hay nuevas imágenes
+            if st.session_state.processed_images and new_images:
                 process_images(
                     det_model=det_model,
                     clf_model=clf_model,
@@ -874,60 +816,51 @@ def main():
                     iou_thres=IOU_THRES,
                     classes_name=CLASSES_NAME_ES
                 )
-                # Forzar una actualización de la interfaz
-                #st.rerun()
+            # Si se presionó el botón de procesar, procesar todas las imágenes
+            elif process_image_button:
+                process_images(
+                    det_model=det_model,
+                    clf_model=clf_model,
+                    processor=processor,
+                    confidence=st.session_state.confidence/100,
+                    iou_thres=IOU_THRES,
+                    classes_name=CLASSES_NAME_ES
+                )
 
             # Mostrar imágenes procesadas
             if st.session_state.processed_images:
                 for processed in st.session_state.processed_images:
                     if processed['filename'] == selected_image:
                         if len(processed['detections']) > 0:
-                            # Determinar el título y el estilo según el modo
-                            if st.session_state.use_detection:
-                                title = "🔍 Úlceras Detectadas"
-                            else:
-                                title = "🔍 Clasificación de la Imagen"
-                            
+                            title = "🔍 Úlceras Detectadas"
                             st.markdown(f"""
                                 <div style='text-align: center; font-size: 1.5em; margin-bottom: 0.5rem;'>
                                     {title}
                                 </div>
                             """, unsafe_allow_html=True)
-                            
                             with st.container():
                                 # Mostrar cada detección verticalmente
                                 for idx, detection in enumerate(processed['detections']):
                                     # Crear figura con matplotlib para la visualización
                                     fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-                                    
                                     # Mostrar la imagen original
                                     img_array = np.array(detection['original_image'])
                                     ax.imshow(img_array)
-                                    
-                                    # Superponer el mapa de atención
-                                    # Si el modelo de detección está desactivado, siempre mostrar atención
-                                    # Si está activado, respetar el toggle
-                                    if not st.session_state.use_detection or st.session_state.show_attention:
+                                    # Superponer el mapa de atención solo si show_attention es True
+                                    if st.session_state.show_attention:
                                         mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
                                         ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
-                                    
                                     ax.axis('off')
-                                    plt.tight_layout(pad=0)  # Eliminar el padding
-                                    
-                                    # Convertir la figura a imagen PIL
+                                    plt.tight_layout(pad=0)
                                     buf = io.BytesIO()
-                                    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)  # Eliminar el padding al guardar
+                                    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
                                     plt.close(fig)
                                     buf.seek(0)
                                     display_image = PIL.Image.open(buf)
-                                    
-                                    # Contenedor para la imagen
                                     st.image(
                                         display_image,
                                         use_column_width=True
                                     )
-                                    
-                                    # Badge de clasificación con estilo actualizado
                                     st.markdown(
                                         f"""
                                         <div style="
@@ -1032,12 +965,6 @@ def update_detection_mode():
                     processed['detections'] = [cached_results['full_image_classification']]
                     processed['boxes'] = []
                     processed['classes'] = [cached_results['full_image_class']]
-    
-    # Actualizar el estado del toggle de atención
-    if not st.session_state.use_detection:
-        if "show_attention_toggle" in st.session_state:
-            del st.session_state["show_attention_toggle"]
-        st.session_state.show_attention = False
 
 if __name__ == '__main__':
     main()
