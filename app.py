@@ -599,7 +599,7 @@ def main():
                 value=st.session_state.show_attention,
                 key="show_attention",
                 on_change=on_attention_toggle,
-                help="Activar/desactivar la visualización de las zonas de atención"
+                help="Activar/Desactivar la visualización de las zonas de atención"
             )
         else:
             # Si la detección está desactivada, forzar show_attention a True
