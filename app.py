@@ -33,16 +33,17 @@ def load_models():
         det_model = load_pt_model(Path(settings.DETECTION_MODEL))
         # Cargar el modelo desde Hugging Face
         model_path = 'daoliver/Vit_upd'
-        processor = ViTImageProcessor.from_pretrained(model_path)
+        processor = ViTImageProcessor.from_pretrained(model_path, local_files_only=False)
         clf_model = ViTForImageClassification.from_pretrained(
             model_path,
             num_labels=len(CLASSES_NAME),
             ignore_mismatched_sizes=True,
-            output_attentions=True
+            output_attentions=True,
+            local_files_only=False
         )
         return det_model, processor, clf_model
     except Exception as ex:
-        st.error("No se pudo cargar los modelos. Verifique las rutas especificadas")
+        st.error("No se pudo cargar los modelos. Verifique la conexión a internet y las rutas especificadas")
         st.error(ex)
         return None, None, None
 
@@ -497,7 +498,7 @@ def main():
     try:
         det_model, processor, clf_model = load_models()
     except Exception as ex:
-        st.error("No se pudo cargar los modelos. Verifique las rutas especificadas")
+        st.error("No se pudo cargar los modelos. Verifique la conexión a internet y las rutas especificadas")
         st.error(ex)
         return
     
