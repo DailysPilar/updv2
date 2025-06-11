@@ -188,13 +188,13 @@ def write_csv(processed_images: List[Dict[str, Any]], classes_name: List[str]) -
     csv_writer = csv.writer(csv_buffer)
     
     # Escribir la cabecera del CSV según el modo
-    if st.session_state.use_detection:
+    if st.session_state.detection_toggle:
         csv_writer.writerow(['filename', 'xmin', 'ymin', 'xmax', 'ymax', 'class'])
     else:
         csv_writer.writerow(['filename', 'class'])
 
     for img in processed_images:
-        if st.session_state.use_detection:
+        if st.session_state.detection_toggle:
             # Modo detección: escribir coordenadas y clase para cada detección
             for box, clf in zip(img['boxes'], img['classes']):
                 xmin, ymin, xmax, ymax = [round(coord.item(), 2) for coord in box.xyxy[0]]
@@ -232,12 +232,13 @@ def check_duplicates(uploaded_files: list):
 def process_images(det_model, clf_model, processor, confidence: float, iou_thres: float, classes_name: List[str]) -> None:
     """
     Procesa las imágenes usando los modelos de detección y clasificación de manera más eficiente.
+    Siempre realiza tanto la detección como la clasificación, pero muestra los resultados según el modo seleccionado.
     """
     # Limpiar el estado antes de procesar nuevas imágenes
     st.session_state.processed_images = []
     
     # Asegurar que el estado de atención esté sincronizado con el modo de detección
-    if not st.session_state.use_detection:
+    if not st.session_state.detection_toggle:
         st.session_state.show_attention = True
     
     target_size = (224, 224)
@@ -245,12 +246,13 @@ def process_images(det_model, clf_model, processor, confidence: float, iou_thres
     
     for image in st.session_state.uploaded_images:
         image_name = image.name
+        uploaded_image = PIL.Image.open(image)
         
         # Verificar si ya tenemos los resultados de clasificación en caché
         if image_name in st.session_state.classification_cache:
             cached_results = st.session_state.classification_cache[image_name]
             
-            if st.session_state.use_detection:
+            if st.session_state.detection_toggle:
                 # Si estamos en modo detección, usar los resultados de detección
                 detections = cached_results['detections']
                 bboxes = cached_results['boxes']
@@ -262,8 +264,6 @@ def process_images(det_model, clf_model, processor, confidence: float, iou_thres
                 classes = [cached_results['full_image_class']]
         else:
             # Si no hay resultados en caché, procesar la imagen
-            uploaded_image = PIL.Image.open(image)
-            
             # Realizar la clasificación de la imagen completa primero
             with torch.no_grad():
                 resized_image = uploaded_image.resize(target_size)
@@ -281,55 +281,50 @@ def process_images(det_model, clf_model, processor, confidence: float, iou_thres
                     'class': CLASSES_NAME_ES[full_image_class]
                 }
             
-            if st.session_state.use_detection:
-                # Modo con detección
-                det_res = det_model.predict(uploaded_image, conf=confidence, iou=iou_thres)
-                bboxes = det_res[0].boxes
-                cropped_images = crop_images(uploaded_image, bboxes)
-                
-                # Clasificar cada detección
-                detections = []
-                classes = []
-                
-                with torch.no_grad():
-                    for cropped_image in cropped_images:
-                        resized_crop = cropped_image.resize(target_size)
-                        inputs = processor(images=[resized_crop], return_tensors="pt")
-                        outputs = clf_model(**inputs)
-                        class_idx = outputs.logits.argmax(-1).item()
-                        classes.append(class_idx)
-                        
-                        # Procesar atenciones para la detección
-                        attentions = outputs.attentions[-1][0]
-                        attention_map = process_attention_maps(attentions, cropped_image)
-                        
-                        detections.append({
-                            'original_image': cropped_image,
-                            'attention_map': attention_map,
-                            'class': CLASSES_NAME_ES[class_idx]
-                        })
-            else:
-                # Modo sin detección
-                detections = [full_image_detection]
-                bboxes = []
-                classes = [full_image_class]
+            # Siempre realizar la detección y clasificación de las detecciones
+            det_res = det_model.predict(uploaded_image, conf=confidence, iou=iou_thres)
+            bboxes = det_res[0].boxes
+            cropped_images = crop_images(uploaded_image, bboxes)
+            
+            # Clasificar cada detección
+            detections = []
+            classes = []
+            
+            with torch.no_grad():
+                for cropped_image in cropped_images:
+                    resized_crop = cropped_image.resize(target_size)
+                    inputs = processor(images=[resized_crop], return_tensors="pt")
+                    outputs = clf_model(**inputs)
+                    class_idx = outputs.logits.argmax(-1).item()
+                    classes.append(class_idx)
+                    
+                    # Procesar atenciones para la detección
+                    attentions = outputs.attentions[-1][0]
+                    attention_map = process_attention_maps(attentions, cropped_image)
+                    
+                    detections.append({
+                        'original_image': cropped_image,
+                        'attention_map': attention_map,
+                        'class': CLASSES_NAME_ES[class_idx]
+                    })
             
             # Guardar resultados en caché
-            st.session_state.classification_cache[image_name] = {
+            cached_results = {
                 'full_image_classification': full_image_detection,
                 'full_image_class': full_image_class,
                 'detections': detections,
                 'boxes': bboxes,
                 'classes': classes
             }
+            st.session_state.classification_cache[image_name] = cached_results
         
-        # Almacenar los resultados en la lista temporal
+        # Almacenar los resultados en la lista temporal según el modo actual
         processed_results.append({
-            'image': PIL.Image.open(image),
+            'image': uploaded_image,
             'filename': image_name,
-            'boxes': bboxes,
-            'classes': classes,
-            'detections': detections
+            'boxes': bboxes if st.session_state.detection_toggle else [],
+            'classes': classes if st.session_state.detection_toggle else [cached_results['full_image_class']],
+            'detections': detections if st.session_state.detection_toggle else [cached_results['full_image_classification']]
         })
     
     # Actualizar el estado de la sesión con todos los resultados procesados
@@ -563,11 +558,11 @@ def main():
             """
             Callback que se ejecuta cuando cambia el estado del toggle de detección
             """
-            # Actualizar el estado de detección
-            st.session_state.use_detection = st.session_state.use_detection
-            
             # Si se desactiva la detección, forzar show_attention a True
-            if not st.session_state.use_detection:
+            if not st.session_state.detection_toggle:
+                st.session_state.show_attention = True
+            else:
+                # Si se reactiva la detección, también forzar show_attention a True
                 st.session_state.show_attention = True
             
             # Reprocesar las imágenes si hay alguna cargada
@@ -577,26 +572,28 @@ def main():
         # Toggle para elegir el modo de procesamiento
         st.toggle(
             "Usar modelo de detección",
-            value=st.session_state.use_detection,
-            key="use_detection",
+            value=True,
+            key="detection_toggle",
             on_change=on_detection_toggle,
             help="Activar/Desactivar modelo de detección de UPD"
         )
 
         # Mostrar el toggle de atención solo si la detección está activada
-        if st.session_state.use_detection:
+        if st.session_state.detection_toggle:
             def on_attention_toggle():
                 """
                 Callback que se ejecuta cuando cambia el estado del toggle de atención
                 """
-                st.session_state.show_attention = st.session_state.show_attention
                 # Reprocesar las imágenes para actualizar la visualización
                 if 'uploaded_images' in st.session_state and st.session_state.uploaded_images:
                     process_images(det_model, clf_model, processor, st.session_state.confidence/100, IOU_THRES, CLASSES_NAME)
 
+            # Inicializar show_attention en el session state si no existe
+            if 'show_attention' not in st.session_state:
+                st.session_state.show_attention = True
+
             st.toggle(
                 "Mostrar zonas de atención",
-                value=st.session_state.show_attention,
                 key="show_attention",
                 on_change=on_attention_toggle,
                 help="Activar/Desactivar la visualización de las zonas de atención"
