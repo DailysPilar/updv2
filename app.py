@@ -31,7 +31,8 @@ def load_models():
     """
     try:
         det_model = load_pt_model(Path(settings.DETECTION_MODEL))
-        model_path = 'weights/vit3con32'
+        # Cargar el modelo desde Hugging Face
+        model_path = 'daoliver/Vit_upd'
         processor = ViTImageProcessor.from_pretrained(model_path)
         clf_model = ViTForImageClassification.from_pretrained(
             model_path,
