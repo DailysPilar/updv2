@@ -14,4 +14,4 @@ ROOT = ROOT.relative_to(Path.cwd())
 # Directorio donde se almacenan los modelos
 MODEL_DIR = ROOT / 'weights'
 DETECTION_MODEL = MODEL_DIR / 'det_model.pt'
-CLASS_MODEL = MODEL_DIR / 'vit3con32'
+# CLASS_MODEL = MODEL_DIR / 'vit3con32'  # Ya no se usa, modelo ahora en Hugging Face
