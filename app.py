@@ -15,13 +15,9 @@ import base64
 import time
 from tqdm import tqdm 
 from streamlit.components.v1 import html as html_component
-import torch
+import torch  # Agregar esta importación
 from transformers import ViTForImageClassification, ViTImageProcessor
 import matplotlib.pyplot as plt
-import tensorflow as tf
-
-# Configurar TensorFlow para usar la API v1
-tf.compat.v1.disable_eager_execution()
 
 # Constantes globales de la aplicación
 IOU_THRES = 0.5  # Umbral de IoU para la supresión de no máximos
@@ -37,14 +33,13 @@ def load_models():
         det_model = load_pt_model(Path(settings.DETECTION_MODEL))
         # Cargar el modelo desde Hugging Face
         model_path = 'daoliver/Vit_upd'
-        processor = ViTImageProcessor.from_pretrained(model_path, local_files_only=False, force_download=False)
+        processor = ViTImageProcessor.from_pretrained(model_path, local_files_only=False)
         clf_model = ViTForImageClassification.from_pretrained(
             model_path,
             num_labels=len(CLASSES_NAME),
             ignore_mismatched_sizes=True,
             output_attentions=True,
-            local_files_only=False,
-            force_download=False
+            local_files_only=False
         )
         return det_model, processor, clf_model
     except Exception as ex:
@@ -388,33 +383,62 @@ def export_results(processed_images: List[Dict[str, Any]]) -> None:
     with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
         # Agregar cada imagen procesada al ZIP
         for processed in processed_images:
-            # Crear figura con matplotlib para la visualización
-            fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-            
-            # Mostrar la imagen original
-            img_array = np.array(processed['image'])
-            ax.imshow(img_array)
-            
-            # Superponer el mapa de atención
-            for detection in processed['detections']:
-                mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
-                ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
-            
-            ax.axis('off')
-            plt.tight_layout(pad=0)
-            
-            # Convertir la figura a bytes
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
-            plt.close(fig)
-            buf.seek(0)
-            
-            # Guardar en el ZIP con un nombre descriptivo
-            filename = processed['filename']
-            base_name = Path(filename).stem
-            extension = Path(filename).suffix
-            output_name = f"{base_name}_processed{extension}"
-            zip_file.writestr(output_name, buf.getvalue())
+            if st.session_state.detection_toggle:
+                # En modo detección, guardar cada detección individualmente
+                for idx, detection in enumerate(processed['detections'], 1):
+                    # Crear figura con matplotlib para la visualización
+                    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+                    
+                    # Mostrar la imagen original
+                    img_array = np.array(detection['original_image'])
+                    ax.imshow(img_array)
+                    
+                    # Superponer el mapa de atención
+                    mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
+                    ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
+                    
+                    ax.axis('off')
+                    plt.tight_layout(pad=0)
+                    
+                    # Convertir la figura a bytes
+                    buf = io.BytesIO()
+                    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
+                    plt.close(fig)
+                    buf.seek(0)
+                    
+                    # Guardar en el ZIP con un nombre descriptivo
+                    base_name = Path(processed['filename']).stem
+                    extension = Path(processed['filename']).suffix
+                    output_name = f"{base_name}_{idx}{extension}"
+                    zip_file.writestr(output_name, buf.getvalue())
+            else:
+                # En modo clasificación, guardar la imagen completa
+                fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+                
+                # Mostrar la imagen original
+                img_array = np.array(processed['image'])
+                ax.imshow(img_array)
+                
+                # Superponer el mapa de atención
+                for detection in processed['detections']:
+                    mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
+                    ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
+                
+                ax.axis('off')
+                plt.tight_layout(pad=0)
+                
+                # Convertir la figura a bytes
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
+                plt.close(fig)
+                buf.seek(0)
+                
+                # Guardar en el ZIP con un nombre descriptivo
+                filename = processed['filename']
+                base_name = Path(filename).stem
+                extension = Path(filename).suffix
+                output_name = f"{base_name}_processed{extension}"
+                zip_file.writestr(output_name, buf.getvalue())
 
         # Agregar el archivo CSV con las anotaciones
         zip_file.writestr('anotaciones.csv', write_csv(processed_images, CLASSES_NAME))
