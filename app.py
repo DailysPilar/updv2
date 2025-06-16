@@ -198,13 +198,20 @@ def write_csv(processed_images: List[Dict[str, Any]], classes_name: List[str]) -
     for img in processed_images:
         if st.session_state.detection_toggle:
             # Modo detección: escribir coordenadas y clase para cada detección
-            for box, clf in zip(img['boxes'], img['classes']):
+            for idx, (box, clf) in enumerate(zip(img['boxes'], img['classes']), 1):
                 xmin, ymin, xmax, ymax = [round(coord.item(), 2) for coord in box.xyxy[0]]
-                csv_writer.writerow([img['filename'], xmin, ymin, xmax, ymax, classes_name[clf]])
+                # Crear nombre de archivo con índice de detección
+                base_name = Path(img['filename']).stem
+                extension = Path(img['filename']).suffix
+                detection_filename = f"{base_name}_{idx}{extension}"
+                csv_writer.writerow([detection_filename, xmin, ymin, xmax, ymax, classes_name[clf]])
         else:
             # Modo clasificación: escribir solo el nombre del archivo y la clase
             class_name = img['detections'][0]['class']
-            csv_writer.writerow([img['filename'], class_name])
+            base_name = Path(img['filename']).stem
+            extension = Path(img['filename']).suffix
+            processed_filename = f"{base_name}_processed{extension}"
+            csv_writer.writerow([processed_filename, class_name])
 
     # Devolver el contenido del CSV como una cadena de texto
     return csv_buffer.getvalue()
