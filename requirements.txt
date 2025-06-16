@@ -7,5 +7,5 @@ Pillow
 torch==2.3.1
 streamlit==1.39.0
 ultralytics==8.2.58
-transformers==4.36.2
+transformers
 torchvision
