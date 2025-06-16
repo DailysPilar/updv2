@@ -191,19 +191,22 @@ def write_csv(processed_images: List[Dict[str, Any]], classes_name: List[str]) -
     
     # Escribir la cabecera del CSV según el modo
     if st.session_state.detection_toggle:
-        csv_writer.writerow(['filename', 'xmin', 'ymin', 'xmax', 'ymax', 'class'])
+        csv_writer.writerow(['filename', 'detection_id', 'xmin', 'ymin', 'xmax', 'ymax', 'class'])
     else:
         csv_writer.writerow(['filename', 'class'])
 
     for img in processed_images:
         if st.session_state.detection_toggle:
             # Modo detección: escribir coordenadas y clase para cada detección
-            for box, clf in zip(img['boxes'], img['classes']):
+            for idx, (box, clf) in enumerate(zip(img['boxes'], img['classes']), 1):
                 xmin, ymin, xmax, ymax = [round(coord.item(), 2) for coord in box.xyxy[0]]
-                csv_writer.writerow([img['filename'], xmin, ymin, xmax, ymax, classes_name[clf]])
+                # Crear nombre de archivo con índice de detección
+                base_name = Path(img['filename']).stem
+                extension = Path(img['filename']).suffix
+                detection_filename = f"{base_name}_{idx}{extension}"
+                csv_writer.writerow([detection_filename, idx, xmin, ymin, xmax, ymax, classes_name[clf]])
         else:
             # Modo clasificación: escribir solo el nombre del archivo y la clase
-            # Obtener la clase directamente de la detección
             class_name = img['detections'][0]['class']
             csv_writer.writerow([img['filename'], class_name])
 
@@ -384,33 +387,62 @@ def export_results(processed_images: List[Dict[str, Any]]) -> None:
     with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
         # Agregar cada imagen procesada al ZIP
         for processed in processed_images:
-            # Crear figura con matplotlib para la visualización
-            fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-            
-            # Mostrar la imagen original
-            img_array = np.array(processed['image'])
-            ax.imshow(img_array)
-            
-            # Superponer el mapa de atención
-            for detection in processed['detections']:
-                mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
-                ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
-            
-            ax.axis('off')
-            plt.tight_layout(pad=0)
-            
-            # Convertir la figura a bytes
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
-            plt.close(fig)
-            buf.seek(0)
-            
-            # Guardar en el ZIP con un nombre descriptivo
-            filename = processed['filename']
-            base_name = Path(filename).stem
-            extension = Path(filename).suffix
-            output_name = f"{base_name}_processed{extension}"
-            zip_file.writestr(output_name, buf.getvalue())
+            if st.session_state.detection_toggle:
+                # En modo detección, guardar cada detección individualmente
+                for idx, detection in enumerate(processed['detections'], 1):
+                    # Crear figura con matplotlib para la visualización
+                    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+                    
+                    # Mostrar la imagen original
+                    img_array = np.array(detection['original_image'])
+                    ax.imshow(img_array)
+                    
+                    # Superponer el mapa de atención
+                    mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
+                    ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
+                    
+                    ax.axis('off')
+                    plt.tight_layout(pad=0)
+                    
+                    # Convertir la figura a bytes
+                    buf = io.BytesIO()
+                    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
+                    plt.close(fig)
+                    buf.seek(0)
+                    
+                    # Guardar en el ZIP con un nombre descriptivo
+                    base_name = Path(processed['filename']).stem
+                    extension = Path(processed['filename']).suffix
+                    output_name = f"{base_name}_{idx}{extension}"
+                    zip_file.writestr(output_name, buf.getvalue())
+            else:
+                # En modo clasificación, guardar la imagen completa
+                fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+                
+                # Mostrar la imagen original
+                img_array = np.array(processed['image'])
+                ax.imshow(img_array)
+                
+                # Superponer el mapa de atención
+                for detection in processed['detections']:
+                    mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
+                    ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
+                
+                ax.axis('off')
+                plt.tight_layout(pad=0)
+                
+                # Convertir la figura a bytes
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
+                plt.close(fig)
+                buf.seek(0)
+                
+                # Guardar en el ZIP con un nombre descriptivo
+                filename = processed['filename']
+                base_name = Path(filename).stem
+                extension = Path(filename).suffix
+                output_name = f"{base_name}_processed{extension}"
+                zip_file.writestr(output_name, buf.getvalue())
 
         # Agregar el archivo CSV con las anotaciones
         zip_file.writestr('anotaciones.csv', write_csv(processed_images, CLASSES_NAME))
