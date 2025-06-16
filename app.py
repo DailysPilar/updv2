@@ -15,9 +15,13 @@ import base64
 import time
 from tqdm import tqdm 
 from streamlit.components.v1 import html as html_component
-import torch  # Agregar esta importación
+import torch
 from transformers import ViTForImageClassification, ViTImageProcessor
 import matplotlib.pyplot as plt
+import tensorflow as tf
+
+# Configurar TensorFlow para usar la API v1
+tf.compat.v1.disable_eager_execution()
 
 # Constantes globales de la aplicación
 IOU_THRES = 0.5  # Umbral de IoU para la supresión de no máximos
@@ -33,13 +37,14 @@ def load_models():
         det_model = load_pt_model(Path(settings.DETECTION_MODEL))
         # Cargar el modelo desde Hugging Face
         model_path = 'daoliver/Vit_upd'
-        processor = ViTImageProcessor.from_pretrained(model_path, local_files_only=False)
+        processor = ViTImageProcessor.from_pretrained(model_path, local_files_only=False, force_download=False)
         clf_model = ViTForImageClassification.from_pretrained(
             model_path,
             num_labels=len(CLASSES_NAME),
             ignore_mismatched_sizes=True,
             output_attentions=True,
-            local_files_only=False
+            local_files_only=False,
+            force_download=False
         )
         return det_model, processor, clf_model
     except Exception as ex:
