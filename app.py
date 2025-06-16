@@ -490,6 +490,80 @@ def main():
         initial_sidebar_state="expanded"
     )
     
+    # Configurar tema oscuro por defecto
+    st.markdown("""
+        <style>
+            [data-theme="light"] {
+                --background-color: #262730;
+                --text-color: #FFFFFF;
+                --secondary-background-color: #1E1E1E;
+                --main-color: #FF4B4B;
+                --font: sans-serif;
+            }
+            .stApp {
+                background-color: #262730;
+                color: #FFFFFF;
+            }
+            .stSidebar {
+                background-color: #1E1E1E;
+            }
+            .stButton>button {
+                background-color: #FF4B4B;
+                color: white;
+            }
+            .stButton>button:hover {
+                background-color: #FF6B6B;
+            }
+            .stSlider>div>div>div {
+                background-color: #FF4B4B;
+            }
+            .stProgress>div>div>div {
+                background-color: #FF4B4B;
+            }
+            .stSelectbox>div>div>div {
+                background-color: #1E1E1E;
+                color: #FFFFFF;
+            }
+            .stTextInput>div>div>input {
+                background-color: #1E1E1E;
+                color: #FFFFFF;
+            }
+            .stFileUploader>div>div>div {
+                background-color: #1E1E1E;
+                color: #FFFFFF;
+            }
+            .stMarkdown {
+                color: #FFFFFF;
+            }
+            .stAlert {
+                background-color: #1E1E1E;
+                color: #FFFFFF;
+            }
+            .stToast {
+                background-color: #1E1E1E;
+                color: #FFFFFF;
+            }
+            .stTooltip {
+                background-color: #1E1E1E;
+                color: #FFFFFF;
+            }
+            .stExpander {
+                background-color: #1E1E1E;
+                color: #FFFFFF;
+            }
+            .stTabs [data-baseweb="tab-list"] {
+                background-color: #1E1E1E;
+            }
+            .stTabs [data-baseweb="tab"] {
+                color: #FFFFFF;
+            }
+            .stTabs [data-baseweb="tab-panel"] {
+                background-color: #1E1E1E;
+                color: #FFFFFF;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+    
     # Inicializar el estado de la sesión y variables
     initialize_session()
     source_imgs = []
