@@ -456,12 +456,15 @@ def export_results(processed_images: List[Dict[str, Any]]) -> None:
 
     # Mostrar el botón de descarga
     try:
+        # Determinar el nombre del archivo ZIP según el modo
+        zip_filename = "updcondetector.zip" if st.session_state.detection_toggle else "updsindetector.zip"
+        
         st.sidebar.download_button(
             use_container_width=True,
             help='Exportar imágenes procesadas y anotaciones',
             label="📥 Exportar",
             data=zip_data,
-            file_name="upd.zip",
+            file_name=zip_filename,
             mime="application/zip"
         )
     except Exception as ex:
