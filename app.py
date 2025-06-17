@@ -764,7 +764,7 @@ def main():
                 index=image_filenames.index(st.session_state.selected_image_name),
                 help="Selecciona la imagen que desea visualizar",
                 key="image_selector",
-                label_visibility=False,
+                label_visibility="hidden",
                 on_change=lambda: setattr(st.session_state, 'selected_image_name', st.session_state.image_selector)
             )
             
