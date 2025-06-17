@@ -644,7 +644,7 @@ def main():
 
         # Control deslizante para ajustar la confianza del modelo
         def on_confidence_change():
-            if st.session_state.use_detection:
+            if st.session_state.detection_toggle:
                 st.session_state.confidence = st.session_state.confidence_slider
                 # Reprocesar las imágenes si hay alguna cargada
                 if 'uploaded_images' in st.session_state and st.session_state.uploaded_images:
@@ -656,7 +656,7 @@ def main():
             max_value=100, 
             value=st.session_state.confidence,
             help='Probabilidad de certeza en la detección de la úlcera',
-            disabled=not st.session_state.use_detection,
+            disabled=not st.session_state.detection_toggle,
             key="confidence_slider",
             on_change=on_confidence_change
         )
