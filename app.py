@@ -84,6 +84,7 @@ def clear_session() -> None:
     """
     Limpia el estado de la sesión, eliminando las imágenes cargadas y procesadas.
     """
+    # Primero, eliminar las variables que no dependen de otras
     if 'uploaded_images' in st.session_state:
         del st.session_state.uploaded_images
     
@@ -93,10 +94,13 @@ def clear_session() -> None:
     if 'classification_cache' in st.session_state:
         del st.session_state.classification_cache
     
-    # Resetear el estado de atención cuando se limpia la sesión
-    st.session_state.show_attention = True
-    
+    # Incrementar la clave del cargador
     st.session_state.uploader_key += 1
+    
+    # Reiniciar el estado de atención después de limpiar las otras variables
+    if 'show_attention' in st.session_state:
+        del st.session_state.show_attention
+    st.session_state.show_attention = True
 
 def style_language_uploader():
     """
