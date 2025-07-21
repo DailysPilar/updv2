@@ -62,17 +62,15 @@ def get_image_download_buffer(img_array: np.ndarray) -> BytesIO:
 def draw_bounding_boxes(image, det_results, classes, classes_name):
     """
     Dibuja los cuadros delimitadores en la imagen según los resultados de la predicción.
-
     Args:
         image: La imagen original en formato RGB en la que se dibujarán los cuadros.
         det_results (List): Resultados de la predicción del modelo YOLO, incluyendo las cajas, clases y confianza.
         classes (List[int]): Resultados de la clasificación de cada caja delimitadora.
         classes_name (List[str]): Nombre perteneciente a cada clase.
-
     Returns:
         numpy.ndarray: La imagen con los cuadros delimitadores dibujados, en formato RGB.
     """
-    color = (124, 80, 0)  # Color de las cajas en formato RGB
+    color = (0, 0, 255)  # Rojo puro en BGR para OpenCV
     text_color = (255, 255, 255)  # Color del texto (blanco)
 
     # Convertir la imagen de OpenCV (NumPy) a PIL para poder dibujar con Pillow
@@ -83,7 +81,7 @@ def draw_bounding_boxes(image, det_results, classes, classes_name):
     width, height = pil_image.size
 
     # Ajustar tamaño de fuente y grosor de línea en función de la resolución de la imagen
-    base_font_size = 20
+    base_font_size = 28  # Aumentar el tamaño base de la fuente
     base_line_width = 4
     base_baseline = 3
     scale_factor = max(width, height) / 1000  # Ajustar este valor según el tamaño de imagen
@@ -100,38 +98,37 @@ def draw_bounding_boxes(image, det_results, classes, classes_name):
     except IOError:
         font = ImageFont.load_default()
 
-    # Iterar sobre cada resultado de la predicción
-    for det_result, clf in zip(det_results, classes):
-        boxes = det_result.boxes  # Cuadros delimitadores
-        for box in boxes:
-            xmin, ymin, xmax, ymax = box.xyxy[0]
-            conf = box.conf[0]
+    # Obtener las cajas del primer resultado
+    boxes = det_results[0].boxes
 
-            # Definir el texto con la etiqueta y la confianza
-            label_clf = f'{classes_name[clf]}'
+    # Iterar sobre cada caja y su clase correspondiente
+    for box, clf in zip(boxes, classes):
+        xmin, ymin, xmax, ymax = box.xyxy[0]
+        conf = box.conf[0]
 
-            # Medir el tamaño del texto para calcular el fondo
-            text_bbox = draw.textbbox((xmin, ymin), label_clf, font=font)
-            text_width = text_bbox[2] - text_bbox[0]
-            text_height = text_bbox[3] - text_bbox[1]
+        # Definir el texto con la etiqueta y la confianza
+        label_clf = f'{classes_name[clf]}'
 
-            # Posición del rectángulo de fondo
-            text_position = (xmin + baseline, ymin - text_height - baseline)
-            background_position = [
-                text_position[0] - baseline, text_position[1],
-                text_position[0] + text_width + baseline, text_position[1] + text_height + baseline
-            ]
+        # Medir el tamaño del texto para calcular el fondo
+        text_bbox = draw.textbbox((xmin, ymin), label_clf, font=font)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_height = text_bbox[3] - text_bbox[1]
 
-            # Dibujar el cuadro delimitador del objeto
-            draw.rectangle([xmin, ymin, xmax, ymax], outline=color, width=line_width)
+        # Posición del rectángulo de fondo y texto (DENTRO de la caja)
+        text_position = (xmin + baseline, ymin + baseline)
+        background_position = [
+            text_position[0] - baseline, text_position[1],
+            text_position[0] + text_width + baseline, text_position[1] + text_height + baseline
+        ]
 
-            # Dibujar el rectángulo de fondo para el texto
-            draw.rectangle(background_position, fill=color)
+        # Dibujar el cuadro delimitador del objeto
+        draw.rectangle([xmin, ymin, xmax, ymax], outline=color, width=line_width)
 
-            # Dibujar el texto (etiqueta + confianza) en varias posiciones para simular negrita
-            offsets = [(0, 0), (1, 0), (0, 1), (1, 1)]
-            for offset in offsets:
-                draw.text((text_position[0] + offset[0], text_position[1] + offset[1]), label_clf, font=font, fill=text_color)
+        # Dibujar el rectángulo de fondo para el texto
+        draw.rectangle(background_position, fill=color)
+
+        # Dibujar el texto (etiqueta) solo una vez, sin offsets, para que no sea negrita
+        draw.text(text_position, label_clf, font=font, fill=text_color)
 
     # Convertir la imagen de vuelta a formato OpenCV
     return cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)

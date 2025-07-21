@@ -195,7 +195,7 @@ def write_csv(processed_images: List[Dict[str, Any]], classes_name: List[str]) -
     
     # Escribir la cabecera del CSV según el modo
     if st.session_state.detection_toggle:
-        csv_writer.writerow(['filename', 'xmin', 'ymin', 'xmax', 'ymax', 'class'])
+        csv_writer.writerow(['filename', 'xmin', 'ymin', 'xmax', 'ymax', 'class', 'confidence'])
     else:
         csv_writer.writerow(['filename', 'class'])
 
@@ -204,11 +204,12 @@ def write_csv(processed_images: List[Dict[str, Any]], classes_name: List[str]) -
             # Modo detección: escribir coordenadas y clase para cada detección
             for idx, (box, clf) in enumerate(zip(img['boxes'], img['classes']), 1):
                 xmin, ymin, xmax, ymax = [round(coord.item(), 2) for coord in box.xyxy[0]]
+                conf = round(float(box.conf[0]) * 100, 2)  # Convertir a porcentaje
                 # Crear nombre de archivo con índice de detección
                 base_name = Path(img['filename']).stem
                 extension = Path(img['filename']).suffix
                 detection_filename = f"{base_name}_{idx}{extension}"
-                csv_writer.writerow([detection_filename, xmin, ymin, xmax, ymax, classes_name[clf]])
+                csv_writer.writerow([detection_filename, xmin, ymin, xmax, ymax, classes_name[clf], conf])
         else:
             # Modo clasificación: escribir solo el nombre del archivo y la clase
             class_name = img['detections'][0]['class']
@@ -269,6 +270,7 @@ def process_images(det_model, clf_model, processor, confidence: float, iou_thres
                 detections = cached_results['detections']
                 bboxes = cached_results['boxes']
                 classes = cached_results['classes']
+                det_res = cached_results['det_res'] # Asegúrate de que det_res esté disponible
             else:
                 # Si estamos en modo clasificación directa, usar la clasificación de la imagen completa
                 detections = [cached_results['full_image_classification']]
@@ -326,7 +328,8 @@ def process_images(det_model, clf_model, processor, confidence: float, iou_thres
                 'full_image_class': full_image_class,
                 'detections': detections,
                 'boxes': bboxes,
-                'classes': classes
+                'classes': classes,
+                'det_res': det_res
             }
             st.session_state.classification_cache[image_name] = cached_results
         
@@ -334,6 +337,7 @@ def process_images(det_model, clf_model, processor, confidence: float, iou_thres
         processed_results.append({
             'image': uploaded_image,
             'filename': image_name,
+            'det_res': cached_results.get('det_res', None), # Asegúrate de que det_res esté disponible
             'boxes': bboxes if st.session_state.detection_toggle else [],
             'classes': classes if st.session_state.detection_toggle else [cached_results['full_image_class']],
             'detections': detections if st.session_state.detection_toggle else [cached_results['full_image_classification']]
@@ -404,9 +408,10 @@ def export_results(processed_images: List[Dict[str, Any]]) -> None:
                     img_array = np.array(detection['original_image'])
                     ax.imshow(img_array)
                     
-                    # Superponer el mapa de atención
-                    mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
-                    ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
+                    # Superponer el mapa de atención solo si está activado
+                    if st.session_state.show_attention:
+                        mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
+                        ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
                     
                     ax.axis('off')
                     plt.tight_layout(pad=0)
@@ -430,10 +435,11 @@ def export_results(processed_images: List[Dict[str, Any]]) -> None:
                 img_array = np.array(processed['image'])
                 ax.imshow(img_array)
                 
-                # Superponer el mapa de atención
-                for detection in processed['detections']:
-                    mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
-                    ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
+                # Superponer el mapa de atención solo si está activado
+                if st.session_state.show_attention:
+                    for detection in processed['detections']:
+                        mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
+                        ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
                 
                 ax.axis('off')
                 plt.tight_layout(pad=0)
@@ -655,7 +661,7 @@ def main():
                     process_images(det_model, clf_model, processor, st.session_state.confidence/100, IOU_THRES, CLASSES_NAME)
 
         st.slider( 
-            label="📍 Seleccionar confianza de detección",
+            label="📉 Seleccionar confianza de detección",
             min_value=0,
             max_value=100, 
             value=st.session_state.confidence,
@@ -669,7 +675,7 @@ def main():
         uploader_container = st.container()
         with uploader_container:
             source_imgs = st.file_uploader(
-                label="📍 Seleccionar imágenes",
+                label="📂 Seleccionar imágenes",
                 help='Imagen del pie que desea analizar',
                 type=("jpg", "jpeg", "png"),
                 accept_multiple_files=True,
@@ -789,9 +795,11 @@ def main():
         col1, col2 = st.columns([1,1], gap="medium")
         with col1:
             try:
-                st.markdown("""
-                    <div style='text-align: center; font-size: 1.5em;'>
-                        📸 Imagen Original
+                marco_foto_Rojo_base64 = image_to_base64("marcoFotoRojo.png")
+                st.markdown(f"""
+                    <div style='text-align: center; font-size: 1.5em; display: flex; align-items: center; justify-content: center; gap: 10px;'>
+                        <img src='data:image/png;base64,{marco_foto_Rojo_base64}' width='30' height='30' style='vertical-align: middle;'>
+                        <span>Imagen Original</span>
                     </div>
                 """, unsafe_allow_html=True)
                 with st.container():
@@ -835,7 +843,6 @@ def main():
                 st.error("Ocurrió un error al abrir la imagen.")
                 st.error(ex)
 
-        # Procesar y mostrar resultados
         with col2:
             if delete_button:
                 clear_session()
@@ -843,14 +850,9 @@ def main():
                 time.sleep(0.6)
                 st.rerun()
 
-            # Lista de nombres de imágenes procesadas
             processed_filenames = [img['filename'] for img in st.session_state.processed_images] if st.session_state.processed_images else []
             uploaded_filenames = [img.name for img in st.session_state.uploaded_images]
-
-            # Verificar si hay nuevas imágenes que procesar
             new_images = [name for name in uploaded_filenames if name not in processed_filenames]
-            
-            # Procesar automáticamente solo si hay imágenes procesadas previamente y hay nuevas imágenes
             if st.session_state.processed_images and new_images:
                 process_images(
                     det_model=det_model,
@@ -860,7 +862,6 @@ def main():
                     iou_thres=IOU_THRES,
                     classes_name=CLASSES_NAME_ES
                 )
-            # Si se presionó el botón de procesar, procesar todas las imágenes
             elif process_image_button:
                 process_images(
                     det_model=det_model,
@@ -871,123 +872,228 @@ def main():
                     classes_name=CLASSES_NAME_ES
                 )
 
-            # Mostrar imágenes procesadas
-            if st.session_state.processed_images:
+            # Mostrar imagen original o cartel según detecciones
+            mostrar_cartel = False
+            if st.session_state.detection_toggle and st.session_state.processed_images:
                 for processed in st.session_state.processed_images:
                     if processed['filename'] == selected_image:
                         if len(processed['detections']) > 0:
-                            title = "🔍 Úlceras Detectadas"
+                            cajas_delimitadoras_base64 = image_to_base64("cajasdelimitadoras.png")
                             st.markdown(f"""
-                                <div style='text-align: center; font-size: 1.5em; margin-bottom: 0.5rem;'>
-                                    {title}
+                                <div style='text-align: center; font-size: 1.5em; display: flex; align-items: center; justify-content: center; gap: 10px;'>
+                                    <img src='data:image/png;base64,{cajas_delimitadoras_base64}' width='30' height='30' style='vertical-align: middle;'>
+                                    <span>Cajas delimitadoras</span>
                                 </div>
+                                <br>
                             """, unsafe_allow_html=True)
-                            with st.container():
-                                # Mostrar cada detección verticalmente
-                                for idx, detection in enumerate(processed['detections']):
-                                    # Crear figura con matplotlib para la visualización
-                                    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-                                    # Mostrar la imagen original
-                                    img_array = np.array(detection['original_image'])
-                                    ax.imshow(img_array)
-                                    # Superponer el mapa de atención solo si show_attention es True
-                                    if st.session_state.show_attention:
-                                        mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
-                                        ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
-                                    ax.axis('off')
-                                    plt.tight_layout(pad=0)
-                                    buf = io.BytesIO()
-                                    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
-                                    plt.close(fig)
-                                    buf.seek(0)
-                                    display_image = PIL.Image.open(buf)
-                                    st.image(
-                                        display_image,
-                                        use_column_width=True
-                                    )
-                                    st.markdown(
-                                        f"""
-                                        <div style="
-                                            background-color: #FF4B4B;
-                                            color: white;
-                                            padding: 8px 12px;
-                                            border-radius: 6px;
-                                            text-align: center;
-                                            margin: 5px auto 15px auto;
-                                            font-weight: 600;
-                                            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                                            width: 80%;
-                                            box-sizing: border-box;
-                                        ">
-                                            {f'Detección {idx + 1}: ' if st.session_state.use_detection else ''}{detection['class']}
-                                        </div>
-                                        """,
-                                        unsafe_allow_html=True
-                                    )
+                            # Mostrar la imagen con los cuadros delimitadores
+                            try:
+                                original_image = PIL.Image.open(source_img)
+                                image_with_boxes = draw_bounding_boxes(
+                                    original_image,
+                                    processed['det_res'],
+                                    processed['classes'],
+                                    CLASSES_NAME_ES
+                                )
+                                st.image(image_with_boxes, use_column_width=True)
+                            except Exception as ex:
+                                st.error("Ocurrió un error al dibujar las cajas delimitadoras.")
+                                st.error(ex)
+                            mostrar_cartel = False
                         else:
-                            st.markdown("""
+                            mostrar_cartel = True
+                        break
+                if mostrar_cartel:
+                    st.markdown("""
+                        <div style="
+                            background-color: transparent;
+                            padding: 2rem;
+                            text-align: center;
+                            margin: 1rem 0;
+                        ">
+                            <div style="
+                                width: 100px;
+                                height: 100px;
+                                background-color: #00C853;
+                                border-radius: 50%;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                margin: 3rem auto 1rem auto;
+                                box-shadow: 0 4px 8px rgba(0,200,83,0.3);
+                            ">
                                 <div style="
-                                    background-color: transparent;
-                                    padding: 2rem;
-                                    text-align: center;
-                                    margin: 1rem 0;
+                                    font-size: 4rem;
+                                    color: white;
+                                    transform: scale(1.2);
                                 ">
-                                    <div style="
-                                        width: 100px;
-                                        height: 100px;
-                                        background-color: #00C853;
-                                        border-radius: 50%;
-                                        display: flex;
-                                        align-items: center;
-                                        justify-content: center;
-                                        margin: 3rem auto 1rem auto;
-                                        box-shadow: 0 4px 8px rgba(0,200,83,0.3);
-                                    ">
-                                        <div style="
-                                            font-size: 4rem;
-                                            color: white;
-                                            transform: scale(1.2);
-                                        ">
-                                            ✓
-                                        </div>
-                                    </div>
-                                    <div style="
-                                        font-size: 1.2rem;
-                                        color: var(--text-color);
-                                        font-weight: 800;
-                                    ">
-                                        No se han detectado ulceraciones
-                                    </div>
-                                    <div style="
-                                        font-size: 0.9rem;
-                                        color: var(--text-color);
-                                        margin-top: 0.5rem;
-                                        opacity: 0.8;
-                                    ">
-                                        La imagen analizada no presenta signos de úlceras
-                                    </div>
+                                    ✓
                                 </div>
-                                <style>
-                                    :root {
-                                        --text-color: var(--text-color);
-                                    }
-                                    @media (prefers-color-scheme: dark) {
-                                        :root {
-                                            --text-color: #FFFFFF;
-                                        }
-                                    }
-                                    @media (prefers-color-scheme: light) {
-                                        :root {
-                                            --text-color: #000000;
-                                        }
-                                    }
-                                </style>
-                            """, unsafe_allow_html=True)
+                            </div>
+                            <div style="
+                                font-size: 1.2rem;
+                                color: var(--text-color);
+                                font-weight: 800;
+                            ">
+                                No se han detectado ulceraciones
+                            </div>
+                            <div style="
+                                font-size: 0.9rem;
+                                color: var(--text-color);
+                                margin-top: 0.5rem;
+                                opacity: 0.8;
+                            ">
+                                La imagen analizada no presenta signos de úlceras
+                            </div>
+                        </div>
+                        <style>
+                            :root {
+                                --text-color: var(--text-color);
+                            }
+                            @media (prefers-color-scheme: dark) {
+                                :root {
+                                    --text-color: #FFFFFF;
+                                }
+                            }
+                            @media (prefers-color-scheme: light) {
+                                :root {
+                                    --text-color: #000000;
+                                }
+                            }
+                        </style>
+                    """, unsafe_allow_html=True)
+            else:
+                st.markdown("""
+                    <div style="
+                        background-color: transparent;
+                        padding: 2rem;
+                        text-align: center;
+                        margin: 1rem 0;
+                    ">
+                        <div style="
+                            width: 100px;
+                            height: 100px;
+                            background-color: #2196F3;
+                            border-radius: 50%;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            margin: 3rem auto 1rem auto;
+                            box-shadow: 0 4px 8px rgba(33,150,243,0.3);
+                        ">
+                            <div style="
+                                font-size: 3rem;
+                                color: white;
+                                font-weight: bold;
+                                font-family: Arial, sans-serif;
+                                transform: scale(1.2);
+                            ">
+                                i
+                            </div>
+                        </div>
+                        <div style="
+                            font-size: 1.2rem;
+                            color: var(--text-color);
+                            font-weight: 800;
+                        ">
+                            No hay cajas delimitadoras detectadas<br>porque el modelo de detección está desactivado
+                        </div>
+                        <div style="
+                            font-size: 0.9rem;
+                            color: var(--text-color);
+                            margin-top: 0.5rem;
+                            opacity: 0.8;
+                        ">
+                            Activa el modelo de detección para ver las cajas delimitadoras
+                        </div>
+                    </div>
+                    <style>
+                        :root {
+                            --text-color: var(--text-color);
+                        }
+                        @media (prefers-color-scheme: dark) {
+                            :root {
+                                --text-color: #FFFFFF;
+                            }
+                        }
+                        @media (prefers-color-scheme: light) {
+                            :root {
+                                --text-color: #000000;
+                            }
+                        }
+                    </style>
+                """, unsafe_allow_html=True)
 
             # Mostrar botón de exportación si hay imágenes procesadas
             if st.session_state.processed_images and len(st.session_state.processed_images) == len(st.session_state.uploaded_images):
-                # Mostrar el botón de exportación en ambos modos
                 export_results(st.session_state.processed_images)
+
+        # Fila inferior: mostrar recortes/detecciones en horizontal si existen
+        if st.session_state.processed_images:
+            for processed in st.session_state.processed_images:
+                if processed['filename'] == selected_image and len(processed['detections']) > 0:
+                    # Título y mira roja
+                    mira_roja_base64 = image_to_base64("miraRoja.png")
+                    st.markdown(f"""
+                        <div style="
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            gap: 12px;
+                            background: transparent;
+                            color: white;
+                            font-size: 2em;
+                            font-weight: bold;
+                            padding: 12px 24px;
+                            margin-bottom: 1.2rem;
+                            letter-spacing: 1px;
+                            border-top: 2px solid #b71c1c;
+                        ">
+                            <img src="data:image/png;base64,{mira_roja_base64}" width="36" height="36" style="vertical-align: middle; filter: drop-shadow(0 0 4px #fff3);">
+                            <span>Úlceras Detectadas</span>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    # Mostrar recortes en columnas horizontales
+                    n = len(processed['detections'])
+                    cols = st.columns(n)
+                    for idx, (detection, col) in enumerate(zip(processed['detections'], cols)):
+                        with col:
+                            # Primero la etiqueta
+                            st.markdown(
+                                f"""
+                                <div style="
+                                    background-color: #FF4B4B;
+                                    color: white;
+                                    padding: 8px 12px;
+                                    border-radius: 6px;
+                                    text-align: center;
+                                    margin: 5px auto 15px auto;
+                                    font-weight: 600;
+                                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                                    width: 70%;
+                                    box-sizing: border-box;
+                                ">
+                                    {f'Detección {idx + 1}: ' if st.session_state.use_detection else ''}{detection['class']}
+                                </div>
+                                """,
+                                unsafe_allow_html=True
+                            )
+                            # Luego la imagen
+                            fig, ax = plt.subplots(1, 1, figsize=(4, 4))
+                            img_array = np.array(detection['original_image'])
+                            ax.imshow(img_array)
+                            if st.session_state.show_attention:
+                                mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
+                                ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
+                            ax.axis('off')
+                            plt.tight_layout(pad=0)
+                            buf = io.BytesIO()
+                            plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
+                            plt.close(fig)
+                            buf.seek(0)
+                            display_image = PIL.Image.open(buf)
+                            st.image(display_image, use_column_width=True)
+                    break
 
 def update_detection_mode():
     """
