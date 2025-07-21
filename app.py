@@ -962,7 +962,7 @@ def main():
                             }
                         </style>
                     """, unsafe_allow_html=True)
-            else:
+            elif not st.session_state.detection_toggle and st.session_state.processed_images:
                 st.markdown("""
                     <div style="
                         background-color: transparent;
