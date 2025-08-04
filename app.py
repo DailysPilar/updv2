@@ -853,24 +853,15 @@ def main():
             processed_filenames = [img['filename'] for img in st.session_state.processed_images] if st.session_state.processed_images else []
             uploaded_filenames = [img.name for img in st.session_state.uploaded_images]
             new_images = [name for name in uploaded_filenames if name not in processed_filenames]
-            if st.session_state.processed_images and new_images:
+            if new_images or process_image_button:
                 process_images(
                     det_model=det_model,
                     clf_model=clf_model,
                     processor=processor,
-                    confidence=st.session_state.confidence/100,
+                    confidence=st.session_state.confidence / 100,
                     iou_thres=IOU_THRES,
                     classes_name=CLASSES_NAME_ES
-                )
-            elif process_image_button:
-                process_images(
-                    det_model=det_model,
-                    clf_model=clf_model,
-                    processor=processor,
-                    confidence=st.session_state.confidence/100,
-                    iou_thres=IOU_THRES,
-                    classes_name=CLASSES_NAME_ES
-                )
+            )
 
             # Mostrar imagen original o cartel según detecciones
             mostrar_cartel = False
