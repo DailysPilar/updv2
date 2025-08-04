@@ -1073,7 +1073,7 @@ def main():
                                     width: 70%;
                                     box-sizing: border-box;
                                 ">
-                                    {f'Detección {idx + 1}: ' if st.session_state.use_detection else ''}{detection['class']}
+                                    {f'Detección {idx + 1}: ' if st.session_state.detection_toggle else ''}{detection['class']}
                                 </div>
                                 """,
                                 unsafe_allow_html=True
@@ -1105,7 +1105,7 @@ def update_detection_mode():
             image_name = processed['filename']
             if image_name in st.session_state.classification_cache:
                 cached_results = st.session_state.classification_cache[image_name]
-                if st.session_state.use_detection:
+                if st.session_state.detection_toggle:
                     # Si estamos en modo detección, usar los resultados de detección
                     processed['detections'] = cached_results['detections']
                     processed['boxes'] = cached_results['boxes']
