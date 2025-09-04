@@ -68,9 +68,7 @@ def initialize_session() -> None:
     if 'uploader_key' not in st.session_state:
         st.session_state.uploader_key = 0
 
-    # Modo de procesamiento (detección o clasificación directa)
-    if 'use_detection' not in st.session_state:
-        st.session_state.use_detection = True
+    # Toggle de detección se inicializa automáticamente por el widget
 
     # Control de visualización de atención (inicializado en True)
     if 'show_attention' not in st.session_state:
@@ -79,6 +77,10 @@ def initialize_session() -> None:
     # Diccionario para almacenar los resultados de clasificación por imagen
     if 'classification_cache' not in st.session_state:
         st.session_state.classification_cache = {}
+
+    # Variable para la imagen seleccionada (para múltiples imágenes)
+    if 'selected_image_name' not in st.session_state:
+        st.session_state.selected_image_name = None
 
 def clear_session() -> None:
     """
@@ -97,10 +99,15 @@ def clear_session() -> None:
     # Incrementar la clave del cargador
     st.session_state.uploader_key += 1
     
-    # Reiniciar el estado de atención después de limpiar las otras variables
+    # Reiniciar el estado de atención y detección después de limpiar las otras variables
     if 'show_attention' in st.session_state:
         del st.session_state.show_attention
+    # detection_toggle se maneja automáticamente por el widget
+    if 'selected_image_name' in st.session_state:
+        del st.session_state.selected_image_name
+    
     st.session_state.show_attention = True
+    st.session_state.selected_image_name = None
 
 def style_language_uploader():
     """
@@ -247,6 +254,15 @@ def process_images(det_model, clf_model, processor, confidence: float, iou_thres
     Procesa las imágenes usando los modelos de detección y clasificación de manera más eficiente.
     Siempre realiza tanto la detección como la clasificación, pero muestra los resultados según el modo seleccionado.
     """
+    # Validaciones previas
+    if not det_model or not clf_model or not processor:
+        st.error("Los modelos no están disponibles. Por favor, recarga la página.")
+        return
+    
+    if 'uploaded_images' not in st.session_state or not st.session_state.uploaded_images:
+        st.warning("No hay imágenes cargadas para procesar.")
+        return
+    
     # Limpiar el estado antes de procesar nuevas imágenes
     st.session_state.processed_images = []
     
@@ -258,42 +274,67 @@ def process_images(det_model, clf_model, processor, confidence: float, iou_thres
     processed_results = []  # Lista temporal para almacenar resultados
     
     for image in st.session_state.uploaded_images:
-        image_name = image.name
-        uploaded_image = PIL.Image.open(image)
+        try:
+            image_name = image.name
+            uploaded_image = PIL.Image.open(image)
+            
+            # Verificar que la imagen se abrió correctamente
+            if uploaded_image is None:
+                st.error(f"No se pudo abrir la imagen: {image_name}")
+                continue
+                
+        except Exception as e:
+            st.error(f"Error al abrir la imagen {image.name}: {str(e)}")
+            continue
         
         # Verificar si ya tenemos los resultados de clasificación en caché
-        if image_name in st.session_state.classification_cache:
+        if ('classification_cache' in st.session_state and 
+            image_name in st.session_state.classification_cache):
             cached_results = st.session_state.classification_cache[image_name]
             
             if st.session_state.detection_toggle:
                 # Si estamos en modo detección, usar los resultados de detección
-                detections = cached_results['detections']
-                bboxes = cached_results['boxes']
-                classes = cached_results['classes']
-                det_res = cached_results['det_res'] # Asegúrate de que det_res esté disponible
+                detections = cached_results.get('detections', [])
+                bboxes = cached_results.get('boxes', [])
+                classes = cached_results.get('classes', [])
+                det_res = cached_results.get('det_res', None)
             else:
                 # Si estamos en modo clasificación directa, usar la clasificación de la imagen completa
-                detections = [cached_results['full_image_classification']]
+                detections = [cached_results.get('full_image_classification', {})]
                 bboxes = []
-                classes = [cached_results['full_image_class']]
+                classes = [cached_results.get('full_image_class', 3)]
         else:
             # Si no hay resultados en caché, procesar la imagen
             # Realizar la clasificación de la imagen completa primero
-            with torch.no_grad():
-                resized_image = uploaded_image.resize(target_size)
-                inputs = processor(images=[resized_image], return_tensors="pt")
-                outputs = clf_model(**inputs)
-                full_image_class = outputs.logits.argmax(-1).item()
-                
-                # Procesar atenciones para la imagen completa
-                attentions = outputs.attentions[-1][0]
-                full_image_attention = process_attention_maps(attentions, uploaded_image)
-                
+            try:
+                with torch.no_grad():
+                    # Asegurar que la imagen esté en formato RGB
+                    if uploaded_image.mode != 'RGB':
+                        uploaded_image = uploaded_image.convert('RGB')
+                    
+                    resized_image = uploaded_image.resize(target_size)
+                    inputs = processor(images=resized_image, return_tensors="pt")
+                    outputs = clf_model(**inputs)
+                    full_image_class = outputs.logits.argmax(-1).item()
+                    
+                    # Procesar atenciones para la imagen completa
+                    attentions = outputs.attentions[-1][0]
+                    full_image_attention = process_attention_maps(attentions, uploaded_image)
+                    
+                    full_image_detection = {
+                        'original_image': uploaded_image,
+                        'attention_map': full_image_attention,
+                        'class': CLASSES_NAME_ES[full_image_class]
+                    }
+            except Exception as e:
+                st.error(f"Error al procesar la imagen {image_name}: {str(e)}")
+                # Crear una detección por defecto en caso de error
                 full_image_detection = {
                     'original_image': uploaded_image,
-                    'attention_map': full_image_attention,
-                    'class': CLASSES_NAME_ES[full_image_class]
+                    'attention_map': np.zeros(uploaded_image.size[::-1]),
+                    'class': 'ERROR'
                 }
+                full_image_class = 3  # Clase 'none' como fallback
             
             # Siempre realizar la detección y clasificación de las detecciones
             det_res = det_model.predict(uploaded_image, conf=confidence, iou=iou_thres)
@@ -509,7 +550,7 @@ def create_visualization(detection):
     ax.imshow(img_array)
     
     # Superponer el mapa de atención solo si show_attention es True y estamos en modo detección
-    if st.session_state.use_detection and st.session_state.show_attention:
+    if st.session_state.detection_toggle and st.session_state.show_attention:
         mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
         ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
     
@@ -608,6 +649,11 @@ def main():
             """
             Callback que se ejecuta cuando cambia el estado del toggle de detección
             """
+            # Validar que los modelos estén cargados
+            if not det_model or not clf_model or not processor:
+                st.warning("Los modelos aún se están cargando. Intenta de nuevo en unos segundos.")
+                return
+            
             # Si se desactiva la detección, forzar show_attention a True
             if not st.session_state.detection_toggle:
                 st.session_state.show_attention = True
@@ -616,7 +662,9 @@ def main():
                 st.session_state.show_attention = True
             
             # Reprocesar las imágenes si hay alguna cargada
-            if 'uploaded_images' in st.session_state and st.session_state.uploaded_images:
+            if ('uploaded_images' in st.session_state and 
+                st.session_state.uploaded_images and 
+                len(st.session_state.uploaded_images) > 0):
                 process_images(det_model, clf_model, processor, st.session_state.confidence/100, IOU_THRES, CLASSES_NAME)
 
         # Toggle para elegir el modo de procesamiento
@@ -634,8 +682,15 @@ def main():
                 """
                 Callback que se ejecuta cuando cambia el estado del toggle de atención
                 """
+                # Validar que los modelos estén cargados
+                if not det_model or not clf_model or not processor:
+                    st.warning("Los modelos aún se están cargando. Intenta de nuevo en unos segundos.")
+                    return
+                
                 # Reprocesar las imágenes para actualizar la visualización
-                if 'uploaded_images' in st.session_state and st.session_state.uploaded_images:
+                if ('uploaded_images' in st.session_state and 
+                    st.session_state.uploaded_images and 
+                    len(st.session_state.uploaded_images) > 0):
                     process_images(det_model, clf_model, processor, st.session_state.confidence/100, IOU_THRES, CLASSES_NAME)
 
             # Inicializar show_attention en el session state si no existe
@@ -654,10 +709,17 @@ def main():
 
         # Control deslizante para ajustar la confianza del modelo
         def on_confidence_change():
+            # Validar que los modelos estén cargados
+            if not det_model or not clf_model or not processor:
+                st.warning("Los modelos aún se están cargando. Intenta de nuevo en unos segundos.")
+                return
+                
             if st.session_state.detection_toggle:
                 st.session_state.confidence = st.session_state.confidence_slider
                 # Reprocesar las imágenes si hay alguna cargada
-                if 'uploaded_images' in st.session_state and st.session_state.uploaded_images:
+                if ('uploaded_images' in st.session_state and 
+                    st.session_state.uploaded_images and 
+                    len(st.session_state.uploaded_images) > 0):
                     process_images(det_model, clf_model, processor, st.session_state.confidence/100, IOU_THRES, CLASSES_NAME)
 
         st.slider( 
