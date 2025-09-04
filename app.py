@@ -72,6 +72,10 @@ def initialize_session() -> None:
     if 'use_detection' not in st.session_state:
         st.session_state.use_detection = True
 
+    # Toggle de detección (inicializado en True)
+    if 'detection_toggle' not in st.session_state:
+        st.session_state.detection_toggle = True
+
     # Control de visualización de atención (inicializado en True)
     if 'show_attention' not in st.session_state:
         st.session_state.show_attention = True
@@ -97,10 +101,14 @@ def clear_session() -> None:
     # Incrementar la clave del cargador
     st.session_state.uploader_key += 1
     
-    # Reiniciar el estado de atención después de limpiar las otras variables
+    # Reiniciar el estado de atención y detección después de limpiar las otras variables
     if 'show_attention' in st.session_state:
         del st.session_state.show_attention
+    if 'detection_toggle' in st.session_state:
+        del st.session_state.detection_toggle
+    
     st.session_state.show_attention = True
+    st.session_state.detection_toggle = True
 
 def style_language_uploader():
     """
@@ -853,21 +861,14 @@ def main():
             processed_filenames = [img['filename'] for img in st.session_state.processed_images] if st.session_state.processed_images else []
             uploaded_filenames = [img.name for img in st.session_state.uploaded_images]
             new_images = [name for name in uploaded_filenames if name not in processed_filenames]
-            if st.session_state.processed_images and new_images:
+            
+            # Procesar automáticamente si hay nuevas imágenes o si se presionó el botón
+            if new_images or process_image_button:
                 process_images(
                     det_model=det_model,
                     clf_model=clf_model,
                     processor=processor,
-                    confidence=st.session_state.confidence/100,
-                    iou_thres=IOU_THRES,
-                    classes_name=CLASSES_NAME_ES
-                )
-            elif process_image_button:
-                process_images(
-                    det_model=det_model,
-                    clf_model=clf_model,
-                    processor=processor,
-                    confidence=st.session_state.confidence/100,
+                    confidence=st.session_state.confidence / 100,
                     iou_thres=IOU_THRES,
                     classes_name=CLASSES_NAME_ES
                 )
