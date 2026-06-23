@@ -1,6 +1,5 @@
 import streamlit as st
 from helper import load_pt_model, get_image_download_buffer, draw_bounding_boxes, crop_images
-from keras.api.models import load_model as load_h5_model
 from pathlib import Path
 import numpy as np
 import PIL
