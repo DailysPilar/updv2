@@ -1,3 +1,6 @@
+import os
+os.environ["HF_HUB_DISABLE_XET"] = "1"
+
 import streamlit as st
 from helper import load_pt_model, get_image_download_buffer, draw_bounding_boxes, crop_images
 from pathlib import Path
