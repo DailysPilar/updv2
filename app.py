@@ -18,7 +18,6 @@ import time
 from tqdm import tqdm 
 from streamlit.components.v1 import html as html_component
 import torch  # Agregar esta importación
-from transformers import ViTForImageClassification, ViTImageProcessor
 import matplotlib.pyplot as plt
 
 # Constantes globales de la aplicación
@@ -28,12 +27,10 @@ CLASSES_NAME_ES = ['INFECCIÓN E ISQUEMIA', 'INFECCIÓN', 'ISQUEMIA', 'SANO']  #
 # Decorador para cachear el modelo de detección y evitar recargas innecesarias
 @st.cache_resource
 def load_models():
-    """
-    Carga todos los modelos necesarios y los cachea para evitar recargas innecesarias.
-    """
     try:
+        from transformers import ViTForImageClassification, ViTImageProcessor
+
         det_model = load_pt_model(Path(settings.DETECTION_MODEL))
-        # Cargar el modelo desde Hugging Face
         model_path = 'daoliver/Vit_upd'
         processor = ViTImageProcessor.from_pretrained(model_path, local_files_only=False)
         clf_model = ViTForImageClassification.from_pretrained(
@@ -41,12 +38,14 @@ def load_models():
             num_labels=len(CLASSES_NAME),
             ignore_mismatched_sizes=True,
             output_attentions=True,
+            attn_implementation="eager",
             local_files_only=False
         )
         return det_model, processor, clf_model
     except Exception as ex:
-        st.error("No se pudo cargar los modelos. Verifique la conexión a internet y las rutas especificadas")
-        st.error(ex)
+        import traceback
+        st.error("No se pudo cargar los modelos.")
+        st.code(traceback.format_exc())
         return None, None, None
 
 def initialize_session() -> None:
