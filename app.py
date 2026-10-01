@@ -901,7 +901,7 @@ def main():
                             }
                         </style>
                     """, unsafe_allow_html=True)
-                    st.image(source_img, use_column_width=True)
+                    st.image(source_img, use_container_width=True)
             except Exception as ex:
                 st.error("Ocurrió un error al abrir la imagen.")
                 st.error(ex)
@@ -949,7 +949,7 @@ def main():
                                     processed['classes'],
                                     CLASSES_NAME_ES
                                 )
-                                st.image(image_with_boxes, use_column_width=True)
+                                st.image(image_with_boxes, use_container_width=True)
                             except Exception as ex:
                                 st.error("Ocurrió un error al dibujar las cajas delimitadoras.")
                                 st.error(ex)
@@ -1146,7 +1146,7 @@ def main():
                             plt.close(fig)
                             buf.seek(0)
                             display_image = PIL.Image.open(buf)
-                            st.image(display_image, use_column_width=True)
+                            st.image(display_image, use_container_width=True)
                     break
 
 def update_detection_mode():

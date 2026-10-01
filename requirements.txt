@@ -7,7 +7,7 @@ opencv-python-headless==4.10.0.84
 Pillow
 matplotlib
 tqdm
-streamlit==1.39.0
+streamlit==1.64.0
 ultralytics==8.2.58
 transformers==4.46.3
 huggingface_hub==0.26.2
