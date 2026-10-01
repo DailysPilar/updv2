@@ -586,7 +586,7 @@ def main():
     
     # Cargar los modelos
     try:
-        det_model, processor, clf_model = load_models()
+        det_model, processor, clf_model = None, None, None
     except Exception as ex:
         st.error("No se pudo cargar los modelos. Verifique la conexión a internet y las rutas especificadas")
         st.error(ex)
