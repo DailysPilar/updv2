@@ -21,6 +21,7 @@ import torch  # Agregar esta importación
 import matplotlib.pyplot as plt
 
 # Constantes globales de la aplicación
+IMAGES_DIR = Path(__file__).resolve().parent / "dist" / "images"
 IOU_THRES = 0.5  # Umbral de IoU para la supresión de no máximos
 CLASSES_NAME = ['both', 'infection', 'ischaemia', 'none']  # Nombres de clases en inglés
 CLASSES_NAME_ES = ['INFECCIÓN E ISQUEMIA', 'INFECCIÓN', 'ISQUEMIA', 'SANO']  # Nombres de clases en español
@@ -572,7 +573,7 @@ def main():
     Configura la interfaz y maneja la lógica principal de la aplicación.
     """
     # Configuración de la página - DEBE ser el primer comando de Streamlit
-    image_path = Path(__file__).parent / "huellas-humanas.png"
+    image_path = IMAGES_DIR / "huellas-humanas.png"
     st.set_page_config(
         page_title="UPD - Úlceras de Pie Diabético",
         page_icon=str(image_path),
@@ -858,7 +859,7 @@ def main():
         col1, col2 = st.columns([1,1], gap="medium")
         with col1:
             try:
-                marco_foto_Rojo_base64 = image_to_base64("marcoFotoRojo.png")
+                marco_foto_Rojo_base64 = image_to_base64(IMAGES_DIR / "marcoFotoRojo.png")
                 st.markdown(f"""
                     <div style='text-align: center; font-size: 1.5em; display: flex; align-items: center; justify-content: center; gap: 10px;'>
                         <img src='data:image/png;base64,{marco_foto_Rojo_base64}' width='30' height='30' style='vertical-align: middle;'>
@@ -932,7 +933,7 @@ def main():
                 for processed in st.session_state.processed_images:
                     if processed['filename'] == selected_image:
                         if len(processed['detections']) > 0:
-                            cajas_delimitadoras_base64 = image_to_base64("cajasdelimitadoras.png")
+                            cajas_delimitadoras_base64 = image_to_base64(IMAGES_DIR / "cajasdelimitadoras.png")
                             st.markdown(f"""
                                 <div style='text-align: center; font-size: 1.5em; display: flex; align-items: center; justify-content: center; gap: 10px;'>
                                     <img src='data:image/png;base64,{cajas_delimitadoras_base64}' width='30' height='30' style='vertical-align: middle;'>
@@ -1087,7 +1088,7 @@ def main():
             for processed in st.session_state.processed_images:
                 if processed['filename'] == selected_image and len(processed['detections']) > 0:
                     # Título y mira roja
-                    mira_roja_base64 = image_to_base64("miraRoja.png")
+                    mira_roja_base64 = image_to_base64(IMAGES_DIR / "miraRoja.png")
                     st.markdown(f"""
                         <div style="
                             display: flex;
