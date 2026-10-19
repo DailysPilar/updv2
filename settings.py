@@ -14,4 +14,6 @@ ROOT = ROOT.relative_to(Path.cwd())
 # Directorio donde se almacenan los modelos
 MODEL_DIR = ROOT / 'weights'
 DETECTION_MODEL = MODEL_DIR / 'det_model.pt'
+SEGMENTATION_REPO = 'daoliver/segformer-b2'
+SEGMENTATION_FILE = 'best_segformer-b2.pth'
 # CLASS_MODEL = MODEL_DIR / 'vit3con32'  # Ya no se usa, modelo ahora en Hugging Face

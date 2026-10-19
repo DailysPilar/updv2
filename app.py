@@ -19,6 +19,9 @@ from tqdm import tqdm
 from streamlit.components.v1 import html as html_component
 import torch  # Agregar esta importación
 import matplotlib.pyplot as plt
+from segmentation_module import render_segmentation_panel, prefetch_segmenter_weights
+from ui_styles import (inject_styles, render_header, render_welcome, section_title, badge, status_card,
+                       current_theme)
 
 # Constantes globales de la aplicación
 IMAGES_DIR = Path(__file__).resolve().parent / "dist" / "images"
@@ -110,82 +113,6 @@ def clear_session() -> None:
     
     st.session_state.show_attention = True
     st.session_state.selected_image_name = None
-
-def style_language_uploader():
-    """
-    Personaliza el estilo y texto del cargador de archivos en español.
-    Modifica el CSS para cambiar los textos del botón y las instrucciones.
-    """
-    # Diccionario con los textos en español
-    languages = {
-        "es": {
-            "button": "Cargar archivos",
-            "instructions": "Arrastra y suelta archivos aquí",
-            "limits": "Límite 5MB por archivo • JPG, JPEG, PNG",
-        },
-    }
-
-    # CSS personalizado para el cargador de archivos
-    hide_label = (
-        """
-        <style>
-            /* Estilo para el botón principal */
-            div[data-testid="stFileUploader"]>section[data-testid="stFileUploaderDropzone"]>button[data-testid="stBaseButton-secondary"] {
-                width: 100%;
-                visibility: hidden;
-                position: relative;
-            }
-            
-            /* Texto personalizado para el botón */
-            div[data-testid="stFileUploader"]>section[data-testid="stFileUploaderDropzone"]>button[data-testid="stBaseButton-secondary"]::after {
-                content: "BUTTON_TEXT";
-                visibility: visible;
-                display: block;
-                position: absolute;
-                width: 100%;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                font-family: inherit;
-                font-size: inherit;
-                color: inherit;
-                background-color: inherit;
-                border: inherit;
-                border-radius: 8px;
-                padding: 5px 10px;
-            }
-            
- /* Ajustar altura del contenedor del cargador */
-            div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] {
-                min-height: 100px !important;
-                padding: 10px !important;
-            }
-            /* Estilo para las instrucciones */
-            div[data-testid="stFileUploaderDropzoneInstructions"]>div>span {
-                visibility: hidden;
-            }
-            div[data-testid="stFileUploaderDropzoneInstructions"]>div>span::after {
-                content: "INSTRUCTIONS_TEXT";
-                visibility: visible;
-                display: block;
-            }
-            
-            /* Estilo para los límites de archivo */
-            div[data-testid="stFileUploaderDropzoneInstructions"]>div>small {
-                visibility: hidden;
-            }
-            div[data-testid="stFileUploaderDropzoneInstructions"]>div>small::before {
-                content: "FILE_LIMITS";
-                visibility: visible;
-                display: block;
-            }
-        </style>
-        """
-        .replace("BUTTON_TEXT", languages.get('es').get("button"))
-        .replace("INSTRUCTIONS_TEXT", languages.get('es').get("instructions"))
-        .replace("FILE_LIMITS", languages.get('es').get("limits"))
-    )
-    st.markdown(hide_label, unsafe_allow_html=True)
 
 def write_csv(processed_images: List[Dict[str, Any]], classes_name: List[str]) -> str:
     """Genera un archivo CSV con las coordenadas de las cajas delimitadoras de las imágenes procesadas.
@@ -583,6 +510,8 @@ def main():
     
     # Inicializar el estado de la sesión y variables
     initialize_session()
+    inject_styles(current_theme())
+    prefetch_segmenter_weights()
     source_imgs = []
     
     # Cargar los modelos
@@ -594,57 +523,16 @@ def main():
         return
     
     # Mostrar logo y título
-    try:
-        base64_logo = image_to_base64(image_path)
-        
-        # Crear dos columnas para el logo y el título
-        col1, col2 = st.columns([3, 1])
-        
-        with col1:
-            st.markdown(
-                f"""
-            <style>
-            .logo-title {{
-                display: flex;
-                align-items: center;
-                gap: 15px;
-            }}
-            /* Eliminar padding del encabezado de la barra lateral */
-            .st-emotion-cache-16idsys p {{
-                padding-top: 0;
-                padding-bottom: 0;
-                margin: 0;
-            }}
-            /* Ajustar padding del contenedor principal */
-            div[data-testid="stMainBlockContainer"] {{
-                padding: 4rem 1rem 10rem 3rem 3rem;
-            }}
-            .st-emotion-cache-1jicfl2 {{
-                padding-left: 3rem;
-                padding-right: 3rem;
-            }}
-            .st-emotion-cache-kgpedg {{
-                padding: 0 !important;
-            }}
-            </style>
-            
-            <div class="logo-title">
-                <img src="data:image/png;base64,{base64_logo}" width="80">
-                <h2>Cuidado inteligente del pie diabético</h2>
-            </div>
-            <br>
-                """,unsafe_allow_html=True
-            )
-    except Exception as e:
-        st.error(f"Error al cargar la imagen: {e}")
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.markdown("<h2>Cuidado inteligente del pie diabético</h2>", unsafe_allow_html=True)
+    render_header(
+        image_to_base64(image_path),
+        "Cuidado inteligente del pie diabético",
+        "Detección, clasificación y segmentación de úlceras de pie diabético",
+    )
     
     # Configuración del sidebar
     with st.sidebar:
         # Título de la barra lateral
-        st.header("⚙️ Configuración del modelo")
+        st.subheader("⚙️ Configuración del modelo")
 
         # Agregar un callback para el toggle de detección
         def on_detection_toggle():
@@ -709,6 +597,12 @@ def main():
             # Si la detección está desactivada, forzar show_attention a True
             st.session_state.show_attention = True
 
+        st.toggle(
+            "Mostrar segmentación de la lesión",
+            value=True,
+            key="show_segmentation",
+            help="Segmenta la imagen completa y superpone la máscara, con el área de la lesión",
+        )
         # Control deslizante para ajustar la confianza del modelo
         def on_confidence_change():
             # Validar que los modelos estén cargados
@@ -725,7 +619,7 @@ def main():
                     process_images(det_model, clf_model, processor, st.session_state.confidence/100, IOU_THRES, CLASSES_NAME)
 
         st.slider( 
-            label="📉 Seleccionar confianza de detección",
+            label="Confianza de detección (%)",
             min_value=0,
             max_value=100, 
             value=st.session_state.confidence,
@@ -735,19 +629,20 @@ def main():
             on_change=on_confidence_change
         )
 
+        st.divider()
+        st.subheader("📂 Seleccionar imágenes")
+
         # Contenedor para el cargador de archivos
         uploader_container = st.container()
         with uploader_container:
             source_imgs = st.file_uploader(
-                label="📂 Seleccionar imágenes",
+                label="Imágenes del pie a analizar",
+                label_visibility="collapsed",
                 help='Imagen del pie que desea analizar',
                 type=("jpg", "jpeg", "png"),
                 accept_multiple_files=True,
                 key=f"image_uploader_{st.session_state.uploader_key}"
             )
-
-        # Personalizar el estilo del cargador
-        style_language_uploader()
 
         # Verificar límite de imágenes
         if source_imgs and len(source_imgs) > 20:
@@ -765,49 +660,32 @@ def main():
             
         # Botones de control
         if source_imgs and len(source_imgs) != 0:
-            delete_button = st.button(
-                "🗑️ Eliminar imágenes",
-                use_container_width=True,
-                help="Eliminar todas las imágenes cargadas",
-                key="delete_button"
-            )
-
             # Botón de análisis y procesamiento de imágenes
             if len(source_imgs) <= 20 and not check_duplicates(source_imgs):
                 text_btn = '🔍 Analizar imágenes' if len(source_imgs) > 1 else '🔍 Analizar imagen'
                 process_image_button = st.button(
                     label=text_btn,
                     help="Analizar las imágenes seleccionadas",
+                    type="primary",
                     use_container_width=True,
                     key="process_button"
                 )
             else:
                 process_image_button = False
+
+            delete_button = st.button(
+                "🗑️ Eliminar imágenes",
+                use_container_width=True,
+                help="Eliminar todas las imágenes cargadas",
+                key="delete_button"
+            )
         else:
             delete_button = False
             process_image_button = False
 
-    # Mostrar mensaje cuando no hay imágenes
+    # Pantalla de bienvenida cuando no hay imágenes
     if not source_imgs or len(source_imgs) == 0:
-        camera_svg = '''
-            <svg xmlns="http://www.w3.org/2000/svg" fill="gray" viewBox="0 0 24 24" width="24" height="24">
-                <circle cx="16" cy="8.011" r="2.5"/>
-                <path d="M23,16a1,1,0,0,0-1,1v2a3,3,0,0,1-3,3H17a1,1,0,0,0,0,2h2a5.006,5.006,0,0,0,5-5V17A1,1,0,0,0,23,16Z"/>
-                <path d="M1,8A1,1,0,0,0,2,7V5A3,3,0,0,1,5,2H7A1,1,0,0,0,7,0H5A5.006,5.006,0,0,0,0,5V7A1,1,0,0,0,1,8Z"/>
-                <path d="M7,22H5a3,3,0,0,1-3-3V17a1,1,0,0,0-2,0v2a5.006,5.006,0,0,0,5,5H7a1,1,0,0,0,0-2Z"/>
-                <path d="M19,0H17a1,1,0,0,0,0,2h2a3,3,0,0,1,3,3V7a1,1,0,0,0,2,0V5A5.006,5.006,0,0,0,19,0Z"/>
-                <path d="M18.707,17.293,11.121,9.707a3,3,0,0,0-4.242,0L4.586,12A2,2,0,0,0,4,13.414V16a3,3,0,0,0,3,3H18a1,1,0,0,0,.707-1.707Z"/>
-            </svg>'''
-
-        with st.container(border=True):
-            st.markdown(
-                f"<div style=' font-size: 16px; display: flex; justify-content: center; align-items: center; padding: 0 0 10px 0; gap: 15px; border-radius: 8px;'>"
-                f"{camera_svg}"
-                "No ha seleccionado una imagen para su procesamiento"
-                "</div>",
-                unsafe_allow_html=True
-            )
-
+        render_welcome()
     # Procesar y mostrar las imágenes
     if source_imgs and len(source_imgs) != 0:
         st.session_state.uploaded_images = source_imgs
@@ -833,7 +711,7 @@ def main():
 
             # Usar el estado de la sesión para mantener la selección
             selected_image = st.selectbox(
-                "",
+                "Imagen a visualizar",
                 image_filenames,
                 index=image_filenames.index(st.session_state.selected_image_name),
                 help="Selecciona la imagen que desea visualizar",
@@ -855,59 +733,17 @@ def main():
             selected_image = source_imgs[0].name
             source_img = source_imgs[0]
 
-        # Mostrar imágenes en columnas
+        # Mostrar imágenes en columnas (cada una dentro de su tarjeta)
         col1, col2 = st.columns([1,1], gap="medium")
-        with col1:
+        with col1, st.container(border=True):
             try:
-                marco_foto_Rojo_base64 = image_to_base64(IMAGES_DIR / "marcoFotoRojo.png")
-                st.markdown(f"""
-                    <div style='text-align: center; font-size: 1.5em; display: flex; align-items: center; justify-content: center; gap: 10px;'>
-                        <img src='data:image/png;base64,{marco_foto_Rojo_base64}' width='30' height='30' style='vertical-align: middle;'>
-                        <span>Imagen Original</span>
-                    </div>
-                """, unsafe_allow_html=True)
-                with st.container():
-                    st.markdown("""
-                        <style>
-                            .stImage img {
-                                max-height: 400px !important;
-                                height: auto !important;
-                                max-width: 400px !important;
-                                object-fit: contain !important;
-                                overflow: hidden;
-                                margin: 0 auto !important;
-                                display: block !important;
-                            }
-                            .st-emotion-cache-1kyxreq {
-                                width: 100% !important;
-                                margin: 0 !important;
-                                padding: 0 !important;
-                                display: flex !important;
-                                justify-content: center !important;
-                                align-items: center !important;
-                            }
-                            .st-emotion-cache-1v0mbdj {
-                                width: 100% !important;
-                                margin: 0 !important;
-                                padding: 0 !important;
-                                display: flex !important;
-                                justify-content: center !important;
-                                align-items: center !important;
-                            }
-                            div[data-testid="stImage"] {
-                                display: flex !important;
-                                justify-content: center !important;
-                                align-items: center !important;
-                                width: 100% !important;
-                            }
-                        </style>
-                    """, unsafe_allow_html=True)
-                    st.image(source_img, use_container_width=True)
+                section_title("Imagen original", "🖼️", "Foto cargada, sin modificaciones")
+                st.image(source_img, use_container_width=True)
             except Exception as ex:
                 st.error("Ocurrió un error al abrir la imagen.")
                 st.error(ex)
 
-        with col2:
+        with col2, st.container(border=True):
             if delete_button:
                 clear_session()
                 st.toast('Todas las imágenes han sido eliminadas', icon='✅')
@@ -917,15 +753,17 @@ def main():
             processed_filenames = [img['filename'] for img in st.session_state.processed_images] if st.session_state.processed_images else []
             uploaded_filenames = [img.name for img in st.session_state.uploaded_images]
             new_images = [name for name in uploaded_filenames if name not in processed_filenames]
+            section_title("Cajas delimitadoras", "🎯", "Zonas donde el modelo detectó úlceras")
             if new_images or process_image_button:
-                process_images(
-                    det_model=det_model,
-                    clf_model=clf_model,
-                    processor=processor,
-                    confidence=st.session_state.confidence / 100,
-                    iou_thres=IOU_THRES,
-                    classes_name=CLASSES_NAME_ES
-            )
+                with st.spinner("Detectando úlceras en la imagen...", show_time=True):
+                    process_images(
+                        det_model=det_model,
+                        clf_model=clf_model,
+                        processor=processor,
+                        confidence=st.session_state.confidence / 100,
+                        iou_thres=IOU_THRES,
+                        classes_name=CLASSES_NAME_ES
+                    )
 
             # Mostrar imagen original o cartel según detecciones
             mostrar_cartel = False
@@ -933,14 +771,6 @@ def main():
                 for processed in st.session_state.processed_images:
                     if processed['filename'] == selected_image:
                         if len(processed['detections']) > 0:
-                            cajas_delimitadoras_base64 = image_to_base64(IMAGES_DIR / "cajasdelimitadoras.png")
-                            st.markdown(f"""
-                                <div style='text-align: center; font-size: 1.5em; display: flex; align-items: center; justify-content: center; gap: 10px;'>
-                                    <img src='data:image/png;base64,{cajas_delimitadoras_base64}' width='30' height='30' style='vertical-align: middle;'>
-                                    <span>Cajas delimitadoras</span>
-                                </div>
-                                <br>
-                            """, unsafe_allow_html=True)
                             # Mostrar la imagen con los cuadros delimitadores
                             try:
                                 original_image = PIL.Image.open(source_img)
@@ -959,196 +789,54 @@ def main():
                             mostrar_cartel = True
                         break
                 if mostrar_cartel:
-                    st.markdown("""
-                        <div style="
-                            background-color: transparent;
-                            padding: 2rem;
-                            text-align: center;
-                            margin: 1rem 0;
-                        ">
-                            <div style="
-                                width: 100px;
-                                height: 100px;
-                                background-color: #00C853;
-                                border-radius: 50%;
-                                display: flex;
-                                align-items: center;
-                                justify-content: center;
-                                margin: 3rem auto 1rem auto;
-                                box-shadow: 0 4px 8px rgba(0,200,83,0.3);
-                            ">
-                                <div style="
-                                    font-size: 4rem;
-                                    color: white;
-                                    transform: scale(1.2);
-                                ">
-                                    ✓
-                                </div>
-                            </div>
-                            <div style="
-                                font-size: 1.2rem;
-                                color: var(--text-color);
-                                font-weight: 800;
-                            ">
-                                No se han detectado ulceraciones
-                            </div>
-                            <div style="
-                                font-size: 0.9rem;
-                                color: var(--text-color);
-                                margin-top: 0.5rem;
-                                opacity: 0.8;
-                            ">
-                                La imagen analizada no presenta signos de úlceras
-                            </div>
-                        </div>
-                        <style>
-                            :root {
-                                --text-color: var(--text-color);
-                            }
-                            @media (prefers-color-scheme: dark) {
-                                :root {
-                                    --text-color: #FFFFFF;
-                                }
-                            }
-                            @media (prefers-color-scheme: light) {
-                                :root {
-                                    --text-color: #000000;
-                                }
-                            }
-                        </style>
-                    """, unsafe_allow_html=True)
+                    status_card("ok", "No se han detectado ulceraciones",
+                                "La imagen analizada no presenta signos de úlceras")
             elif not st.session_state.detection_toggle and st.session_state.processed_images:
-                st.markdown("""
-                    <div style="
-                        background-color: transparent;
-                        padding: 2rem;
-                        text-align: center;
-                        margin: 1rem 0;
-                    ">
-                        <div style="
-                            width: 100px;
-                            height: 100px;
-                            background-color: #2196F3;
-                            border-radius: 50%;
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            margin: 3rem auto 1rem auto;
-                            box-shadow: 0 4px 8px rgba(33,150,243,0.3);
-                        ">
-                            <div style="
-                                font-size: 3rem;
-                                color: white;
-                                font-weight: bold;
-                                font-family: Arial, sans-serif;
-                                transform: scale(1.2);
-                            ">
-                                i
-                            </div>
-                        </div>
-                        <div style="
-                            font-size: 1.2rem;
-                            color: var(--text-color);
-                            font-weight: 800;
-                        ">
-                            No hay cajas delimitadoras detectadas<br>porque el modelo de detección está desactivado
-                        </div>
-                        <div style="
-                            font-size: 0.9rem;
-                            color: var(--text-color);
-                            margin-top: 0.5rem;
-                            opacity: 0.8;
-                        ">
-                            Activa el modelo de detección para ver las cajas delimitadoras
-                        </div>
-                    </div>
-                    <style>
-                        :root {
-                            --text-color: var(--text-color);
-                        }
-                        @media (prefers-color-scheme: dark) {
-                            :root {
-                                --text-color: #FFFFFF;
-                            }
-                        }
-                        @media (prefers-color-scheme: light) {
-                            :root {
-                                --text-color: #000000;
-                            }
-                        }
-                    </style>
-                """, unsafe_allow_html=True)
+                status_card("info", "Modelo de detección desactivado",
+                            "Activa el modelo de detección para ver las cajas delimitadoras")
 
             # Mostrar botón de exportación si hay imágenes procesadas
             if st.session_state.processed_images and len(st.session_state.processed_images) == len(st.session_state.uploaded_images):
                 export_results(st.session_state.processed_images)
 
-        # Fila inferior: mostrar recortes/detecciones en horizontal si existen
+        # Fila inferior: recortes de cada detección dentro de una tarjeta (máximo 3 por fila)
         if st.session_state.processed_images:
             for processed in st.session_state.processed_images:
                 if processed['filename'] == selected_image and len(processed['detections']) > 0:
-                    # Título y mira roja
-                    mira_roja_base64 = image_to_base64(IMAGES_DIR / "miraRoja.png")
-                    st.markdown(f"""
-                        <div style="
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            gap: 12px;
-                            background: transparent;
-                            color: white;
-                            font-size: 2em;
-                            font-weight: bold;
-                            padding: 12px 24px;
-                            margin-bottom: 1.2rem;
-                            letter-spacing: 1px;
-                            border-top: 2px solid #b71c1c;
-                        ">
-                            <img src="data:image/png;base64,{mira_roja_base64}" width="36" height="36" style="vertical-align: middle; filter: drop-shadow(0 0 4px #fff3);">
-                            <span>Úlceras Detectadas</span>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    # Mostrar recortes en columnas horizontales
-                    n = len(processed['detections'])
-                    cols = st.columns(n)
-                    for idx, (detection, col) in enumerate(zip(processed['detections'], cols)):
-                        with col:
-                            # Primero la etiqueta
-                            st.markdown(
-                                f"""
-                                <div style="
-                                    background-color: #FF4B4B;
-                                    color: white;
-                                    padding: 8px 12px;
-                                    border-radius: 6px;
-                                    text-align: center;
-                                    margin: 5px auto 15px auto;
-                                    font-weight: 600;
-                                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                                    width: 70%;
-                                    box-sizing: border-box;
-                                ">
-                                    {f'Detección {idx + 1}: ' if st.session_state.detection_toggle else ''}{detection['class']}
-                                </div>
-                                """,
-                                unsafe_allow_html=True
-                            )
-                            # Luego la imagen
-                            fig, ax = plt.subplots(1, 1, figsize=(4, 4))
-                            img_array = np.array(detection['original_image'])
-                            ax.imshow(img_array)
-                            if st.session_state.show_attention:
-                                mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
-                                ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
-                            ax.axis('off')
-                            plt.tight_layout(pad=0)
-                            buf = io.BytesIO()
-                            plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
-                            plt.close(fig)
-                            buf.seek(0)
-                            display_image = PIL.Image.open(buf)
-                            st.image(display_image, use_container_width=True)
+                    detections = processed['detections']
+                    with st.container(border=True):
+                        if st.session_state.detection_toggle:
+                            section_title("Úlceras detectadas", "🔍",
+                                          f"{len(detections)} zona(s) clasificada(s) con su mapa de atención")
+                        else:
+                            section_title("Clasificación de la imagen", "🔍", "Resultado sobre la imagen completa")
+                        per_row = 3
+                        for start in range(0, len(detections), per_row):
+                            cols = st.columns(per_row)
+                            for offset, detection in enumerate(detections[start:start + per_row]):
+                                idx = start + offset
+                                with cols[offset]:
+                                    label = f"Detección {idx + 1}: " if st.session_state.detection_toggle else ""
+                                    healthy = str(detection['class']).upper() in ("SANO", "NONE")
+                                    st.markdown(badge(f"{label}{detection['class']}", ok=healthy), unsafe_allow_html=True)
+                                    fig, ax = plt.subplots(1, 1, figsize=(4, 4))
+                                    img_array = np.array(detection['original_image'])
+                                    ax.imshow(img_array)
+                                    if st.session_state.show_attention:
+                                        mask = np.ma.masked_where(detection['attention_map'] == 0, detection['attention_map'])
+                                        ax.imshow(mask, cmap='Reds', alpha=0.6, vmin=0, vmax=1)
+                                    ax.axis('off')
+                                    plt.tight_layout(pad=0)
+                                    buf = io.BytesIO()
+                                    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
+                                    plt.close(fig)
+                                    buf.seek(0)
+                                    st.image(PIL.Image.open(buf), use_container_width=True)
                     break
+
+        # v3.0: segmentación de la imagen completa con máscara superpuesta y área
+        if st.session_state.get("show_segmentation", True):
+            render_segmentation_panel(source_img)
 
 def update_detection_mode():
     """
